@@ -14,11 +14,14 @@ from pyzo import translate
 from . import QtCore, QtGui, QtWidgets
 
 from . import tasks
+from . import githelper
 from .utils import hasHiddenAttribute, getMounts, cleanpath, isdir, ext
 
 
 # How to name the list of drives/mounts (i.e. 'my computer')
 MOUNTS = "drives"
+# Pre-normalised form used in path comparisons
+_MOUNTS_NORM = op.normcase(op.normpath(MOUNTS))
 
 
 # Create icon provider
@@ -629,6 +632,9 @@ class Tree(QtWidgets.QTreeWidget):
         # Initialize proxy (this is where the path is stored)
         self._proxy = None
 
+        # Git status cache for the current directory's repository
+        self._gitStatus = None
+
     def path(self):
         """Get the current path shown by the treeview."""
         return self._proxy.path()
@@ -715,6 +721,9 @@ class Tree(QtWidgets.QTreeWidget):
         The actual filtering of entries and creation of tree widget items
         is done in the createItemsFun() function.
         """
+        # Refresh git status whenever the top-level listing is rebuilt
+        if parent is self:
+            self._refreshGitStatus()
         # Store state and clear
         self._storeSelectionState()
         parent.clear()
@@ -722,8 +731,51 @@ class Tree(QtWidgets.QTreeWidget):
         count = createItemsFun(self.parent(), parent)
         if not count and isinstance(parent, QtWidgets.QTreeWidgetItem):
             ErrorItem(parent, "Empty / no matches")
+        # Apply git status colours now that all items are fully constructed
+        self._applyGitColors(parent)
         # Restore state
         self._restoreSelectionState()
+
+    def _applyGitColors(self, parent):
+        """Set foreground colours on direct children of *parent* based on git status.
+
+        Called after :func:`createItemsFun` so that all items are fully
+        constructed and inserted into the tree before :meth:`setForeground`
+        is invoked.
+        """
+        if self._gitStatus is None:
+            return
+        if parent is self:
+            count = self.topLevelItemCount()
+            get_item = self.topLevelItem
+        else:
+            count = parent.childCount()
+            get_item = parent.child
+        for i in range(count):
+            item = get_item(i)
+            if isinstance(item, DirItem):
+                color = self._gitStatus.get_dir_color(item.path())
+            elif isinstance(item, FileItem):
+                xy = self._gitStatus.file_status(item.path())
+                color = self._gitStatus.get_color_for_xy(xy)
+            else:
+                continue
+            if color:
+                item.setForeground(0, QtGui.QBrush(QtGui.QColor(*color)))
+            else:
+                item.setForeground(0, QtGui.QBrush())
+
+    def _refreshGitStatus(self):
+        """Refresh the cached git status for the current path."""
+        path = self.path()
+        if op.normcase(op.normpath(path)) == _MOUNTS_NORM or not op.isdir(path):
+            self._gitStatus = None
+            return
+        root = githelper.get_git_root(path)
+        if root:
+            self._gitStatus = githelper.get_git_status(root)
+        else:
+            self._gitStatus = None
 
     def onErrored(self, err="..."):
         self.clear()

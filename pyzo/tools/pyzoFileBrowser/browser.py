@@ -8,6 +8,7 @@ from pyzo.util import zon as ssdf
 
 from . import QtCore, QtGui, QtWidgets
 from . import proxies
+from . import githelper
 from .tree import Tree
 from .utils import cleanpath, isdir
 
@@ -63,6 +64,14 @@ class Browser(QtWidgets.QWidget):
         # The tree transmits signals to widgets that need to know the path
         self._tree.dirChanged.connect(self._pathEdit.setPath)
         self._tree.dirChanged.connect(self._projects.setPath)
+        self._tree.dirChanged.connect(self._updateGitLabel)
+
+        # Create git branch label (hidden when not in a git repo)
+        self._gitLabel = QtWidgets.QLabel("")
+        self._gitLabel.setVisible(False)
+        self._gitLabel.setStyleSheet(
+            "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
+        )
 
         self._layout()
 
@@ -90,6 +99,7 @@ class Browser(QtWidgets.QWidget):
         #
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
+        layout.addWidget(self._gitLabel)
         layout.addWidget(self._tree)
         #
         subLayout = QtWidgets.QHBoxLayout()
@@ -100,6 +110,17 @@ class Browser(QtWidgets.QWidget):
 
     def cleanUp(self):
         self._fsProxy.stop()
+
+    def _updateGitLabel(self, path):
+        """Update the git branch label to reflect the repository at *path*."""
+        root = githelper.get_git_root(path)
+        if root:
+            branch = githelper.get_git_branch(root)
+            if branch:
+                self._gitLabel.setText("\u2387  " + branch)
+                self._gitLabel.setVisible(True)
+                return
+        self._gitLabel.setVisible(False)
 
     def nameFilter(self):
         # return self._nameFilter.lineEdit().text()
