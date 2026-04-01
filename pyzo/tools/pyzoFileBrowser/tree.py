@@ -273,13 +273,6 @@ class BrowserItem(QtWidgets.QTreeWidgetItem):
         # Which is what we want; so it is visible in the logger shell
         task.result()
 
-    def _getGitStatus(self):
-        """Return the :class:`githelper.GitStatus` from the tree, or ``None``."""
-        tree = self.treeWidget()
-        if tree is not None and hasattr(tree, "_gitStatus"):
-            return tree._gitStatus
-        return None
-
 
 class DriveItem(BrowserItem):
     """Tree widget item for directories."""
@@ -314,14 +307,6 @@ class DirItem(BrowserItem):
             overlays.append(pyzo.icons.bullet_yellow)
         icon = addIconOverlays(icon, *overlays, offset=(8, 0), overlay_offset=(-4, 0))
         self.setIcon(0, icon)
-        # Apply git status foreground colour
-        gitStatus = self._getGitStatus()
-        if gitStatus is not None:
-            color = gitStatus.get_dir_color(self.path())
-            if color:
-                self.setForeground(0, QtGui.QBrush(QtGui.QColor(*color)))
-            else:
-                self.setForeground(0, QtGui.QBrush())  # reset to default
 
     def onActivated(self):
         self.treeWidget().setPath(self.path())
@@ -389,15 +374,6 @@ class FileItem(BrowserItem):
             icon = iconprovider.icon(QtCore.QFileInfo(dummy_filename))
         icon = addIconOverlays(icon)
         self.setIcon(0, icon)
-        # Apply git status foreground colour
-        gitStatus = self._getGitStatus()
-        if gitStatus is not None:
-            xy = gitStatus.file_status(self.path())
-            color = gitStatus.get_color_for_xy(xy)
-            if color:
-                self.setForeground(0, QtGui.QBrush(QtGui.QColor(*color)))
-            else:
-                self.setForeground(0, QtGui.QBrush())  # reset to default
 
     def searchContents(self, needle, **kwargs):
         self.setHidden(True)
@@ -753,8 +729,39 @@ class Tree(QtWidgets.QTreeWidget):
         count = createItemsFun(self.parent(), parent)
         if not count and isinstance(parent, QtWidgets.QTreeWidgetItem):
             ErrorItem(parent, "Empty / no matches")
+        # Apply git status colours now that all items are fully constructed
+        self._applyGitColors(parent)
         # Restore state
         self._restoreSelectionState()
+
+    def _applyGitColors(self, parent):
+        """Set foreground colours on direct children of *parent* based on git status.
+
+        Called after :func:`createItemsFun` so that all items are fully
+        constructed and inserted into the tree before :meth:`setForeground`
+        is invoked.
+        """
+        if self._gitStatus is None:
+            return
+        if parent is self:
+            count = self.topLevelItemCount()
+            get_item = self.topLevelItem
+        else:
+            count = parent.childCount()
+            get_item = parent.child
+        for i in range(count):
+            item = get_item(i)
+            if isinstance(item, DirItem):
+                color = self._gitStatus.get_dir_color(item.path())
+            elif isinstance(item, FileItem):
+                xy = self._gitStatus.file_status(item.path())
+                color = self._gitStatus.get_color_for_xy(xy)
+            else:
+                continue
+            if color:
+                item.setForeground(0, QtGui.QBrush(QtGui.QColor(*color)))
+            else:
+                item.setForeground(0, QtGui.QBrush())
 
     def _refreshGitStatus(self):
         """Refresh the cached git status for the current path."""
