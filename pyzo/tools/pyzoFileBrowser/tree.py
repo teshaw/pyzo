@@ -14,6 +14,7 @@ from pyzo import translate
 from . import QtCore, QtGui, QtWidgets
 
 from . import tasks
+from . import githelper
 from .utils import hasHiddenAttribute, getMounts, cleanpath, isdir, ext
 
 
@@ -272,6 +273,13 @@ class BrowserItem(QtWidgets.QTreeWidgetItem):
         # Which is what we want; so it is visible in the logger shell
         task.result()
 
+    def _getGitStatus(self):
+        """Return the :class:`githelper.GitStatus` from the tree, or ``None``."""
+        tree = self.treeWidget()
+        if tree is not None and hasattr(tree, "_gitStatus"):
+            return tree._gitStatus
+        return None
+
 
 class DriveItem(BrowserItem):
     """Tree widget item for directories."""
@@ -306,6 +314,14 @@ class DirItem(BrowserItem):
             overlays.append(pyzo.icons.bullet_yellow)
         icon = addIconOverlays(icon, *overlays, offset=(8, 0), overlay_offset=(-4, 0))
         self.setIcon(0, icon)
+        # Apply git status foreground colour
+        gitStatus = self._getGitStatus()
+        if gitStatus is not None:
+            color = gitStatus.get_dir_color(self.path())
+            if color:
+                self.setForeground(0, QtGui.QBrush(QtGui.QColor(*color)))
+            else:
+                self.setForeground(0, QtGui.QBrush())  # reset to default
 
     def onActivated(self):
         self.treeWidget().setPath(self.path())
@@ -373,6 +389,15 @@ class FileItem(BrowserItem):
             icon = iconprovider.icon(QtCore.QFileInfo(dummy_filename))
         icon = addIconOverlays(icon)
         self.setIcon(0, icon)
+        # Apply git status foreground colour
+        gitStatus = self._getGitStatus()
+        if gitStatus is not None:
+            xy = gitStatus.file_status(self.path())
+            color = gitStatus.get_color_for_xy(xy)
+            if color:
+                self.setForeground(0, QtGui.QBrush(QtGui.QColor(*color)))
+            else:
+                self.setForeground(0, QtGui.QBrush())  # reset to default
 
     def searchContents(self, needle, **kwargs):
         self.setHidden(True)
@@ -629,6 +654,9 @@ class Tree(QtWidgets.QTreeWidget):
         # Initialize proxy (this is where the path is stored)
         self._proxy = None
 
+        # Git status cache for the current directory's repository
+        self._gitStatus = None
+
     def path(self):
         """Get the current path shown by the treeview."""
         return self._proxy.path()
@@ -715,6 +743,9 @@ class Tree(QtWidgets.QTreeWidget):
         The actual filtering of entries and creation of tree widget items
         is done in the createItemsFun() function.
         """
+        # Refresh git status whenever the top-level listing is rebuilt
+        if parent is self:
+            self._refreshGitStatus()
         # Store state and clear
         self._storeSelectionState()
         parent.clear()
@@ -724,6 +755,18 @@ class Tree(QtWidgets.QTreeWidget):
             ErrorItem(parent, "Empty / no matches")
         # Restore state
         self._restoreSelectionState()
+
+    def _refreshGitStatus(self):
+        """Refresh the cached git status for the current path."""
+        path = self.path()
+        if path.lower() == MOUNTS.lower() or not op.isdir(path):
+            self._gitStatus = None
+            return
+        root = githelper.get_git_root(path)
+        if root:
+            self._gitStatus = githelper.get_git_status(root)
+        else:
+            self._gitStatus = None
 
     def onErrored(self, err="..."):
         self.clear()
