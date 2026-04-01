@@ -20,6 +20,8 @@ from .utils import hasHiddenAttribute, getMounts, cleanpath, isdir, ext
 
 # How to name the list of drives/mounts (i.e. 'my computer')
 MOUNTS = "drives"
+# Pre-normalised form used in path comparisons
+_MOUNTS_NORM = op.normcase(op.normpath(MOUNTS))
 
 
 # Create icon provider
@@ -766,7 +768,7 @@ class Tree(QtWidgets.QTreeWidget):
     def _refreshGitStatus(self):
         """Refresh the cached git status for the current path."""
         path = self.path()
-        if op.normcase(op.normpath(path)) == op.normcase(MOUNTS) or not op.isdir(path):
+        if op.normcase(op.normpath(path)) == _MOUNTS_NORM or not op.isdir(path):
             self._gitStatus = None
             return
         root = githelper.get_git_root(path)

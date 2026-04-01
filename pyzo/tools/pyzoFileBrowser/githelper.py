@@ -83,7 +83,9 @@ class GitStatus:
 
     def __init__(self, root, status_dict):
         self.root = root
-        self._status = status_dict  # {normcase_abs_path: "XY"}
+        # Pre-normalise all keys once so every lookup is O(1) / O(n) without
+        # repeated normcase() calls per query.
+        self._status = {op.normcase(k): v for k, v in status_dict.items()}
 
     # ------------------------------------------------------------------
     # Query helpers
@@ -91,20 +93,14 @@ class GitStatus:
 
     def file_status(self, path):
         """Return the ``XY`` status string for *path*, or ``'  '`` if clean."""
-        # Normalise both stored key and query path so lookups work correctly
-        # on case-insensitive filesystems (Windows / macOS).
-        query = op.normcase(path)
-        for key, xy in self._status.items():
-            if op.normcase(key) == query:
-                return xy
-        return "  "
+        return self._status.get(op.normcase(path), "  ")
 
     def dir_has_changes(self, path):
         """Return ``True`` if any tracked file under *path* has a status."""
         prefix = op.normcase(path)
         if not prefix.endswith(os.sep):
             prefix = prefix + os.sep
-        return any(op.normcase(p).startswith(prefix) for p in self._status)
+        return any(p.startswith(prefix) for p in self._status)
 
     def get_color_for_xy(self, xy):
         """Return an RGB tuple for *xy*, or ``None`` when the file is clean."""
@@ -123,7 +119,7 @@ class GitStatus:
         if not prefix.endswith(os.sep):
             prefix = prefix + os.sep
         for filepath, xy in self._status.items():
-            if op.normcase(filepath).startswith(prefix):
+            if filepath.startswith(prefix):
                 color = self.get_color_for_xy(xy)
                 if color is not None:
                     return color
