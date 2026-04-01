@@ -91,14 +91,20 @@ class GitStatus:
 
     def file_status(self, path):
         """Return the ``XY`` status string for *path*, or ``'  '`` if clean."""
-        return self._status.get(op.normcase(path), "  ")
+        # Normalise both stored key and query path so lookups work correctly
+        # on case-insensitive filesystems (Windows / macOS).
+        query = op.normcase(path)
+        for key, xy in self._status.items():
+            if op.normcase(key) == query:
+                return xy
+        return "  "
 
     def dir_has_changes(self, path):
         """Return ``True`` if any tracked file under *path* has a status."""
         prefix = op.normcase(path)
         if not prefix.endswith(os.sep):
             prefix = prefix + os.sep
-        return any(p.startswith(prefix) for p in self._status)
+        return any(op.normcase(p).startswith(prefix) for p in self._status)
 
     def get_color_for_xy(self, xy):
         """Return an RGB tuple for *xy*, or ``None`` when the file is clean."""
@@ -117,7 +123,7 @@ class GitStatus:
         if not prefix.endswith(os.sep):
             prefix = prefix + os.sep
         for filepath, xy in self._status.items():
-            if filepath.startswith(prefix):
+            if op.normcase(filepath).startswith(prefix):
                 color = self.get_color_for_xy(xy)
                 if color is not None:
                     return color
@@ -132,30 +138,36 @@ class GitStatus:
 def get_git_status(repo_root):
     """Return a :class:`GitStatus` for *repo_root*, or ``None`` on failure.
 
-    Runs ``git status --porcelain -u`` inside *repo_root*.
+    Uses ``git status --porcelain=v1 -z`` with NUL-terminated output to
+    correctly handle filenames that contain spaces, quotes or non-ASCII
+    characters without relying on Git's C-string quoting.
     """
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain", "-u"],
+            ["git", "status", "--porcelain=v1", "-z", "-u"],
             cwd=repo_root,
             capture_output=True,
-            text=True,
             timeout=5,
         )
         if result.returncode != 0:
             return None
+        # NUL-terminated records: "XY <path>\0" or "XY <path>\0<orig>\0"
+        # Decode with surrogateescape so binary filenames don't raise.
+        raw = result.stdout.decode("utf-8", errors="surrogateescape")
+        entries = raw.split("\0")
         status = {}
-        for line in result.stdout.splitlines():
-            if len(line) < 4:
+        i = 0
+        while i < len(entries):
+            entry = entries[i]
+            i += 1
+            if len(entry) < 4:
                 continue
-            xy = line[:2]
-            path = line[3:]
-            # Renamed / copied entries have "old -> new" format
-            if " -> " in path:
-                path = path.split(" -> ", 1)[1]
-            # Git quotes paths that contain special characters
-            path = path.strip('"')
-            abs_path = op.normcase(op.join(repo_root, path))
+            xy = entry[:2]
+            path = entry[3:]
+            # For rename/copy the original path follows as a separate entry
+            if xy[0] in ("R", "C"):
+                i += 1  # skip the original path entry
+            abs_path = op.join(repo_root, path)
             status[abs_path] = xy
         return GitStatus(repo_root, status)
     except Exception:

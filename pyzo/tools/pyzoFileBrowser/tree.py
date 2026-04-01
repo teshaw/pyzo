@@ -759,7 +759,7 @@ class Tree(QtWidgets.QTreeWidget):
     def _refreshGitStatus(self):
         """Refresh the cached git status for the current path."""
         path = self.path()
-        if path.lower() == MOUNTS.lower() or not op.isdir(path):
+        if op.normcase(op.normpath(path)) == op.normcase(MOUNTS) or not op.isdir(path):
             self._gitStatus = None
             return
         root = githelper.get_git_root(path)
