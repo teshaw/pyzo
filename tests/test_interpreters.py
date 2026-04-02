@@ -87,8 +87,12 @@ class TestParseVersionCrudely:
         assert parse_version_crudely("1.2.3a4") == (1, 2, 3)
 
     def test_leading_non_numeric(self):
-        # "v1.2.3" prepended: ".v1.2.3" — the dot before "v" is not
-        # followed directly by digits, so only ".2" and ".3" match.
+        # "v1.2.3" prepended: ".v1.2.3". The regex r"\.(\d+)" only matches
+        # a dot followed *immediately* by digits, so ".v" does not match
+        # and the "1" is lost. Only ".2" and ".3" are captured: (2, 3).
+        # This is a known limitation of parse_version_crudely for inputs
+        # with a leading non-numeric prefix before the first dot-separated
+        # component.
         assert parse_version_crudely("v1.2.3") == (2, 3)
 
     def test_version_comparison_ordering(self):
