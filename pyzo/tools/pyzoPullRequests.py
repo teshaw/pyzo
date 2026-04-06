@@ -20,6 +20,8 @@ from pyzo.util import zon as ssdf
 tool_name = "Pull Requests"
 tool_summary = "Shows open pull requests from GitHub."
 
+_USER_AGENT = "pyzo-pull-requests"
+
 
 # ---------------------------------------------------------------------------
 # Keyring helpers (optional dependency)
@@ -169,7 +171,7 @@ class GitHubApiWorker(QtCore.QThread):
         """Make an authenticated GET request and return the parsed JSON body."""
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "pyzo-pull-requests/1.0",
+            "User-Agent": _USER_AGENT,
             "X-GitHub-Api-Version": "2022-11-28",
         }
         if self._token:
@@ -260,7 +262,7 @@ class AvatarLoader(QtCore.QThread):
         try:
             req = Request(
                 self._avatar_url,
-                headers={"User-Agent": "pyzo-pull-requests/1.0"},
+                headers={"User-Agent": _USER_AGENT},
             )
             with urlopen(req, timeout=5) as resp:
                 data = resp.read()
@@ -529,12 +531,14 @@ class PyzoPullRequests(QtWidgets.QWidget):
 
         self._refreshBtn = QtWidgets.QPushButton("↺")
         self._refreshBtn.setToolTip("Refresh pull requests")
+        self._refreshBtn.setAccessibleName("Refresh pull requests")
         self._refreshBtn.setFixedWidth(28)
         self._refreshBtn.clicked.connect(self._refresh)
         toolbar.addWidget(self._refreshBtn)
 
         tokenBtn = QtWidgets.QPushButton("🔑")
         tokenBtn.setToolTip("Configure GitHub token")
+        tokenBtn.setAccessibleName("Configure GitHub token")
         tokenBtn.setFixedWidth(28)
         tokenBtn.clicked.connect(self._configure_token)
         toolbar.addWidget(tokenBtn)
