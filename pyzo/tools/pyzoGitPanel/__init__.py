@@ -40,11 +40,12 @@ def _git_branch(root):
     """Return the current branch name, or ``None``."""
     head = op.join(root, ".git", "HEAD")
     try:
-        with open(head, encoding="utf-8") as fh:
+        with open(head, encoding="utf-8", errors="replace") as fh:
             content = fh.read().strip()
         if content.startswith("ref: refs/heads/"):
             return content[len("ref: refs/heads/"):]
-        return "HEAD:" + content[:7]
+        # Detached HEAD – show up to 7 chars of the SHA
+        return "HEAD:" + content[:7] if len(content) >= 7 else "HEAD:" + content
     except Exception:
         return None
 
@@ -185,6 +186,7 @@ class PyzoGitPanel(QtWidgets.QWidget):
 
         branch = _git_branch(root) or translate("pyzoGitPanel", "(unknown branch)")
         self._branch_label.setText(
+            # \u2387 = gear/branch symbol, \u2014 = em dash separator
             "\u2387 {}  \u2014  {}".format(branch, root)
         )
 
