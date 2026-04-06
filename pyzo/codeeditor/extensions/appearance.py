@@ -1514,9 +1514,9 @@ class DiffGutter:
     * **orange** – lines modified (replaced existing lines)
     * **red** – lines deleted (a small marker between surrounding lines)
 
-    The diff is recomputed via a 500 ms single-shot :class:`QTimer` that
-    restarts on every ``textChanged`` event so that a ``git`` subprocess is
-    not spawned on every keystroke.
+    The diff is recomputed via a single-shot :class:`QTimer` (see
+    :attr:`_DIFF_DEBOUNCE_MS`) that restarts on every ``textChanged`` event
+    so that a ``git`` subprocess is not spawned on every keystroke.
 
     The file path must be provided by calling :meth:`setDiffGutterFilePath`
     whenever the editor's associated file changes (open, save-as).  No
@@ -1525,6 +1525,13 @@ class DiffGutter:
     """
 
     _DIFF_GUTTER_WIDTH = 4  # pixels
+
+    #: Debounce delay in milliseconds before recomputing the diff after a
+    #: text change.  Chosen to avoid spawning ``git`` on every keystroke.
+    _DIFF_DEBOUNCE_MS = 500
+
+    #: Timeout in seconds for the ``git show`` subprocess call.
+    _GIT_SUBPROCESS_TIMEOUT = 5
 
     # Colors for the three hunk kinds
     _DIFF_GUTTER_COLORS = {
@@ -1615,10 +1622,10 @@ class DiffGutter:
             self.__diffGutterLeftMarginHandle, self._getDiffGutterWidth()
         )
 
-        # 500 ms single-shot debounce timer
+        # Single-shot debounce timer; interval set from class constant
         self.__diffDebounceTimer = QtCore.QTimer(self)
         self.__diffDebounceTimer.setSingleShot(True)
-        self.__diffDebounceTimer.setInterval(500)
+        self.__diffDebounceTimer.setInterval(self._DIFF_DEBOUNCE_MS)
         self.__diffDebounceTimer.timeout.connect(self._recomputeDiff)
 
         # Restart the timer on every text change
@@ -1717,7 +1724,7 @@ class DiffGutter:
                 ["git", "show", "HEAD:" + relpath],
                 cwd=git_root,
                 capture_output=True,
-                timeout=5,
+                timeout=self._GIT_SUBPROCESS_TIMEOUT,
             )
             if result.returncode != 0:
                 self.__diffGutterArea.update()

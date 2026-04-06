@@ -209,8 +209,35 @@ class TestDiffGutterWidget:
         assert editor._DiffGutter__diffDebounceTimer.isSingleShot()
 
     def test_timer_interval(self, editor):
-        """The debounce timer interval must be 500 ms."""
-        assert editor._DiffGutter__diffDebounceTimer.interval() == 500
+        """The debounce timer interval matches the class constant."""
+        from pyzo.codeeditor.extensions.appearance import DiffGutter
+
+        assert editor._DiffGutter__diffDebounceTimer.interval() == DiffGutter._DIFF_DEBOUNCE_MS
+
+    def test_timer_fires_and_calls_recompute(self, editor, git_repo, qt_app):
+        """textChanged → timer → _recomputeDiff fires after the debounce period."""
+        from pyzo.qt import QtCore
+
+        _, file_path = git_repo
+        editor.setPlainText("line1\nline2\nline3\n")
+        editor._diffGutterFilePath = str(file_path)
+        editor._diffHunks = []
+
+        # Simulate a text change (adds a line) and let the event loop drain
+        editor.setPlainText("line1\nline2\nextra\nline3\n")
+
+        # The timer is now active; run the event loop until it fires
+        timer = editor._DiffGutter__diffDebounceTimer
+        assert timer.isActive()
+        # Use a blocking loop with a deadline well above the debounce interval
+        deadline = QtCore.QDeadlineTimer(2000)
+        while timer.isActive() and not deadline.hasExpired():
+            qt_app.processEvents()
+        assert not timer.isActive(), "Timer should have fired within the deadline"
+        # After the timer fires the hunks should reflect the added line
+        assert len(editor._diffHunks) == 1
+        assert editor._diffHunks[0].kind == "add"
+        timer.stop()
 
     def test_text_changed_starts_timer(self, editor):
         """Editing text starts (or restarts) the debounce timer."""
