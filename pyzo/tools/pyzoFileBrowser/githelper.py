@@ -2,12 +2,15 @@
 Git helper utilities for the pyzo file browser.
 
 Provides lightweight, dependency-free git integration using only the
-Python standard library.  subprocess is used only for `git status`.
+Python standard library.  subprocess is used only for `git status` and
+background fetch operations.
 """
 
 import os
 import os.path as op
 import subprocess
+import threading
+import time
 
 
 # ---------------------------------------------------------------------------
@@ -168,3 +171,164 @@ def get_git_status(repo_root):
         return GitStatus(repo_root, status)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# subprocess-based git fetch and ahead/behind
+# ---------------------------------------------------------------------------
+
+
+def git_fetch(repo_root):
+    """Run ``git fetch --quiet`` for *repo_root*.
+
+    Returns ``True`` on success, ``False`` on failure.  Times out after
+    30 seconds so it never blocks indefinitely.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "fetch", "--quiet"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=30,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def get_ahead_behind(repo_root):
+    """Return ``(ahead, behind)`` counts vs the upstream branch.
+
+    Runs ``git rev-list --count @{u}..HEAD`` (ahead) and
+    ``git rev-list --count HEAD..@{u}`` (behind).
+    Returns ``(0, 0)`` when there is no upstream or on any error.
+    """
+    try:
+        ahead_result = subprocess.run(
+            ["git", "rev-list", "--count", "@{u}..HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        behind_result = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD..@{u}"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if ahead_result.returncode != 0 or behind_result.returncode != 0:
+            return (0, 0)
+        ahead = int(ahead_result.stdout.strip())
+        behind = int(behind_result.stdout.strip())
+        return (ahead, behind)
+    except Exception:
+        return (0, 0)
+
+
+def get_upstream_branch(repo_root):
+    """Return the upstream tracking branch name for HEAD, or ``None``.
+
+    Uses ``git rev-parse --abbrev-ref --symbolic-full-name @{u}``.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.decode("utf-8", errors="surrogateescape").strip()
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Background fetch worker
+# ---------------------------------------------------------------------------
+
+
+class GitFetchWorker(threading.Thread):
+    """Background thread that periodically fetches from the remote and
+    reports ahead/behind commit counts to the UI via a callback.
+
+    Parameters
+    ----------
+    callback : callable
+        Called with ``(ahead: int, behind: int, upstream: str | None)``
+        from the worker thread.  The caller is responsible for
+        marshalling the result to the main thread (e.g. via a Qt signal).
+    interval : float
+        Seconds between fetch runs (default 300 = 5 minutes).
+    """
+
+    def __init__(self, callback, interval=300):
+        super().__init__(name="GitFetchWorker", daemon=True)
+        self._callback = callback
+        self._interval = interval
+        self._repo_root = None
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # not paused initially
+        # Trigger an immediate fetch when the repo root changes
+        self._trigger_event = threading.Event()
+
+    # ------------------------------------------------------------------
+    # Public API (safe to call from any thread)
+    # ------------------------------------------------------------------
+
+    def set_repo(self, repo_root):
+        """Set the repository root and trigger an immediate fetch."""
+        with self._lock:
+            changed = repo_root != self._repo_root
+            self._repo_root = repo_root
+        if changed:
+            self._trigger_event.set()
+
+    def pause(self):
+        """Pause periodic fetching (e.g. when the application loses focus)."""
+        self._pause_event.clear()
+
+    def resume(self):
+        """Resume periodic fetching and trigger an immediate run."""
+        self._pause_event.set()
+        self._trigger_event.set()
+
+    def stop(self, timeout=2.0):
+        """Stop the worker thread."""
+        self._stop_event.set()
+        self._pause_event.set()   # unblock any wait
+        self._trigger_event.set()  # unblock any wait
+        self.join(timeout)
+
+    # ------------------------------------------------------------------
+    # Thread body
+    # ------------------------------------------------------------------
+
+    def run(self):
+        while not self._stop_event.is_set():
+            # Wait until not paused
+            self._pause_event.wait()
+            if self._stop_event.is_set():
+                break
+
+            with self._lock:
+                repo = self._repo_root
+
+            if repo:
+                self._trigger_event.clear()
+                git_fetch(repo)
+                if not self._stop_event.is_set():
+                    ahead, behind = get_ahead_behind(repo)
+                    upstream = get_upstream_branch(repo)
+                    try:
+                        self._callback(ahead, behind, upstream)
+                    except Exception:
+                        pass
+
+            # Sleep for the configured interval, but wake early if
+            # triggered (repo changed) or stopped.
+            self._trigger_event.wait(timeout=self._interval)
+            self._trigger_event.clear()
