@@ -7,6 +7,7 @@ Python standard library.  subprocess is used only for `git status`.
 
 import os
 import os.path as op
+import re
 import subprocess
 
 
@@ -168,3 +169,39 @@ def get_git_status(repo_root):
         return GitStatus(repo_root, status)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# GitHub remote detection
+# ---------------------------------------------------------------------------
+
+#: Regex that matches GitHub HTTPS and SSH remote URLs and captures
+#: ``owner`` (group 1) and ``repo`` (group 2).
+_GITHUB_URL_RE = re.compile(
+    r"(?:https://github\.com/|git@github\.com:)"
+    r"([A-Za-z0-9_.\-]+)/([A-Za-z0-9_.\-]+?)(?:\.git)?$"
+)
+
+
+def get_github_remote(repo_root):
+    """Return ``(owner, repo)`` parsed from the *origin* remote URL, or ``(None, None)``.
+
+    Supports both HTTPS (``https://github.com/owner/repo``) and SSH
+    (``git@github.com:owner/repo``) GitHub remote URLs.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None, None
+        url = result.stdout.decode("utf-8", errors="replace").strip()
+        m = _GITHUB_URL_RE.match(url)
+        if m:
+            return m.group(1), m.group(2)
+    except Exception:
+        pass
+    return None, None
