@@ -168,3 +168,60 @@ def get_git_status(repo_root):
         return GitStatus(repo_root, status)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Stash helpers
+# ---------------------------------------------------------------------------
+
+
+def get_stash_list(repo_root):
+    """Return a list of ``(ref, message)`` tuples for the git stash.
+
+    Each *ref* is a string like ``'stash@{0}'`` and *message* is the
+    corresponding stash description.  Returns an empty list when there are
+    no stashes or when the command fails.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "stash", "list"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        raw = result.stdout.decode("utf-8", errors="surrogateescape").strip()
+        entries = []
+        for line in raw.splitlines():
+            if not line:
+                continue
+            # Each line looks like: "stash@{0}: WIP on main: message"
+            ref, _, message = line.partition(": ")
+            entries.append((ref.strip(), message.strip()))
+        return entries
+    except Exception:
+        return []
+
+
+def run_stash_command(repo_root, args):
+    """Run ``git stash <args>`` in *repo_root*.
+
+    Returns ``(success, output)`` where *output* is the combined stdout/stderr
+    text.  On failure *success* is ``False`` and *output* contains the error
+    message.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "stash"] + list(args),
+            cwd=repo_root,
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return True, result.stdout.decode("utf-8", errors="surrogateescape")
+        err = result.stderr.decode("utf-8", errors="surrogateescape")
+        out = result.stdout.decode("utf-8", errors="surrogateescape")
+        return False, (err or out).strip()
+    except Exception as exc:
+        return False, str(exc)
