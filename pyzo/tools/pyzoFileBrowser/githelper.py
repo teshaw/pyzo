@@ -125,10 +125,82 @@ class GitStatus:
                     return color
         return None
 
+    def has_tracked_changes(self):
+        """Return ``True`` if any tracked file has staged or unstaged changes.
+
+        Untracked (``??``) and ignored (``!!``) entries are excluded so that
+        the presence of new, uncommitted files does not trigger the warning.
+        """
+        return any(xy not in ("??", "!!") for xy in self._status.values())
+
 
 # ---------------------------------------------------------------------------
 # subprocess-based git status
 # ---------------------------------------------------------------------------
+
+
+def get_git_branches(repo_root):
+    """Return ``(local_branches, remote_branches, current_branch)`` for *repo_root*.
+
+    Runs ``git branch -a`` and parses the output.  Local branch names are
+    returned without any prefix; remote-tracking branch names are returned
+    with the ``remotes/`` prefix as printed by git.
+
+    *current_branch* is the name of the currently checked-out branch (or
+    detached-HEAD description), or ``None`` when it cannot be determined.
+
+    Returns ``([], [], None)`` on failure.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "branch", "-a"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return [], [], None
+        raw = result.stdout.decode("utf-8", errors="surrogateescape")
+        local_branches = []
+        remote_branches = []
+        current_branch = None
+        for line in raw.splitlines():
+            is_current = line.startswith("* ")
+            name = line[2:].strip() if is_current else line.strip()
+            if not name:
+                continue
+            # Skip symbolic HEAD pointers (e.g. "remotes/origin/HEAD -> origin/main")
+            if " -> " in name:
+                continue
+            if name.startswith("remotes/"):
+                remote_branches.append(name)
+            else:
+                local_branches.append(name)
+            if is_current:
+                current_branch = name
+        return local_branches, remote_branches, current_branch
+    except Exception:
+        return [], [], None
+
+
+def git_checkout(repo_root, branch):
+    """Run ``git checkout <branch>`` in *repo_root*.
+
+    Returns ``(True, "")`` on success or ``(False, error_message)`` on failure.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "checkout", branch],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="surrogateescape").strip()
+            return False, stderr
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
 
 def get_git_status(repo_root):

@@ -64,14 +64,13 @@ class Browser(QtWidgets.QWidget):
         # The tree transmits signals to widgets that need to know the path
         self._tree.dirChanged.connect(self._pathEdit.setPath)
         self._tree.dirChanged.connect(self._projects.setPath)
-        self._tree.dirChanged.connect(self._updateGitLabel)
+        self._tree.dirChanged.connect(self._updateBranchCombo)
 
-        # Create git branch label (hidden when not in a git repo)
-        self._gitLabel = QtWidgets.QLabel("")
-        self._gitLabel.setVisible(False)
-        self._gitLabel.setStyleSheet(
-            "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
-        )
+        # Create branch switcher combo box (hidden when not in a git repo)
+        self._branchCombo = QtWidgets.QComboBox()
+        self._branchCombo.setVisible(False)
+        self._branchCombo.setToolTip(translate("filebrowser", "Switch branch"))
+        self._branchCombo.activated.connect(self._onBranchSelected)
 
         self._layout()
 
@@ -99,7 +98,7 @@ class Browser(QtWidgets.QWidget):
         #
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
-        layout.addWidget(self._gitLabel)
+        layout.addWidget(self._branchCombo)
         layout.addWidget(self._tree)
         #
         subLayout = QtWidgets.QHBoxLayout()
@@ -111,16 +110,75 @@ class Browser(QtWidgets.QWidget):
     def cleanUp(self):
         self._fsProxy.stop()
 
-    def _updateGitLabel(self, path):
-        """Update the git branch label to reflect the repository at *path*."""
+    def _updateBranchCombo(self, path):
+        """Populate the branch combo box for the repository at *path*."""
         root = githelper.get_git_root(path)
-        if root:
-            branch = githelper.get_git_branch(root)
-            if branch:
-                self._gitLabel.setText("\u2387  " + branch)
-                self._gitLabel.setVisible(True)
+        if root is None:
+            self._branchCombo.setVisible(False)
+            return
+        local, remote, current = githelper.get_git_branches(root)
+        if not local and not remote:
+            self._branchCombo.setVisible(False)
+            return
+        # Block signals while populating to avoid triggering _onBranchSelected
+        self._branchCombo.blockSignals(True)
+        self._branchCombo.clear()
+        for branch in local:
+            self._branchCombo.addItem(branch)
+        for branch in remote:
+            self._branchCombo.addItem(branch)
+        # Select the current branch
+        if current is not None:
+            idx = self._branchCombo.findText(current)
+            if idx >= 0:
+                self._branchCombo.setCurrentIndex(idx)
+        self._branchCombo.blockSignals(False)
+        self._branchCombo.setVisible(True)
+
+    def _onBranchSelected(self, index):
+        """Handle branch selection: confirm if needed, then run git checkout."""
+        branch = self._branchCombo.itemText(index)
+        path = self._tree.path()
+        root = githelper.get_git_root(path)
+        if root is None:
+            return
+        # Nothing to do when the user re-selects the already active branch
+        current_branch = githelper.get_git_branch(root)
+        if branch == current_branch:
+            return
+        # Warn about uncommitted tracked-file changes before switching
+        status = githelper.get_git_status(root)
+        if status is not None and status.has_tracked_changes():
+            msg = translate(
+                "filebrowser",
+                "You have uncommitted changes. Switching branches may cause them to be lost.\n\nContinue?",
+            )
+            reply = QtWidgets.QMessageBox.warning(
+                self,
+                translate("filebrowser", "Uncommitted Changes"),
+                msg,
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+                # Revert combo to current branch without triggering checkout
+                self._updateBranchCombo(path)
                 return
-        self._gitLabel.setVisible(False)
+        # Run git checkout
+        success, error = githelper.git_checkout(root, branch)
+        if success:
+            # Refresh the changes view and update the branch label
+            self._tree.onChanged()
+            self._updateBranchCombo(path)
+        else:
+            QtWidgets.QMessageBox.critical(
+                self,
+                translate("filebrowser", "Git Checkout Failed"),
+                error or translate("filebrowser", "git checkout failed"),
+            )
+            # Revert combo to current branch
+            self._updateBranchCombo(path)
 
     def nameFilter(self):
         # return self._nameFilter.lineEdit().text()
