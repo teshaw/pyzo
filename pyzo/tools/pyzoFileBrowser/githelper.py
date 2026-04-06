@@ -134,8 +134,10 @@ class GitStatus:
 def git_stash(repo_root, message):
     """Create a new stash entry with *message* in *repo_root*.
 
-    Runs ``git stash push -m <message>`` and returns ``True`` on success,
-    ``False`` otherwise (e.g. nothing to stash, git not found).
+    Runs ``git stash push -m <message>`` and returns ``True`` when the git
+    command exits successfully (exit code 0), ``False`` on failure (e.g. git
+    not found, invalid repository).  Note that git exits with code 0 even
+    when there are no local changes to save.
     """
     try:
         result = subprocess.run(
