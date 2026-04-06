@@ -23,6 +23,7 @@ from .extensions.appearance import (
     LineNumbers,
     SyntaxHighlighting,
     BreakPoints,
+    DiffGutter,
 )
 from .extensions.behaviour import (
     Indentation,
@@ -55,6 +56,7 @@ class CodeEditor(
     ShowLineEndings,
     Wrap,
     BreakPoints,
+    DiffGutter,
     LineNumbers,
     AutoCompletion,  # Escape: first remove autocompletion,
     Calltip,  # then calltip
