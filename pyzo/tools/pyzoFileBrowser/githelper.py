@@ -2,7 +2,8 @@
 Git helper utilities for the pyzo file browser.
 
 Provides lightweight, dependency-free git integration using only the
-Python standard library.  subprocess is used only for `git status`.
+Python standard library.  subprocess is used only for `git status` and
+`git show`.
 """
 
 import os
@@ -166,5 +167,49 @@ def get_git_status(repo_root):
             abs_path = op.join(repo_root, path)
             status[abs_path] = xy
         return GitStatus(repo_root, status)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# subprocess-based git show (blob retrieval)
+# ---------------------------------------------------------------------------
+
+
+def get_file_blob(repo_root, relpath, ref="HEAD"):
+    """Return the committed content of *relpath* at *ref* as a string.
+
+    Runs ``git show <ref>:<relpath>`` inside *repo_root*.
+
+    Parameters
+    ----------
+    repo_root : str
+        Absolute path to the repository root (as returned by
+        :func:`get_git_root`).
+    relpath : str
+        Path of the file relative to *repo_root*.  Windows backslashes
+        are converted to forward slashes automatically.
+    ref : str
+        Any git revision accepted by ``git show`` (branch name, tag,
+        commit SHA, …).  Defaults to ``'HEAD'``.
+
+    Returns
+    -------
+    str or None
+        Decoded file content, or ``None`` when the ref or path does not
+        exist (or on any other git/subprocess error).
+    """
+    # Git always uses forward slashes in object paths, even on Windows.
+    relpath = relpath.replace("\\", "/")
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{ref}:{relpath}"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.decode("utf-8", errors="replace")
     except Exception:
         return None
