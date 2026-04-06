@@ -7,6 +7,7 @@ Python standard library.  subprocess is used only for `git status`.
 
 import os
 import os.path as op
+import re
 import subprocess
 
 
@@ -168,3 +169,118 @@ def get_git_status(repo_root):
         return GitStatus(repo_root, status)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Hunk - diff hunk representation
+# ---------------------------------------------------------------------------
+
+# Regex for the unified-diff hunk header: @@ -old_start[,old_count] +new_start[,new_count] @@
+_HUNK_HEADER_RE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)", re.MULTILINE
+)
+
+
+class Hunk:
+    """Represents a single unified-diff hunk for one file.
+
+    Attributes
+    ----------
+    old_start : int
+        First line number (1-based) in the *old* file.
+    old_count : int
+        Number of lines from the old file covered by this hunk.
+    new_start : int
+        First line number (1-based) in the *new* (working-tree) file.
+    new_count : int
+        Number of lines from the new file covered by this hunk.
+    lines : list[str]
+        All lines belonging to this hunk, including the ``@@`` header
+        line, each ending with ``'\\n'``.
+    """
+
+    def __init__(self, old_start, old_count, new_start, new_count, lines):
+        self.old_start = old_start
+        self.old_count = old_count
+        self.new_start = new_start
+        self.new_count = new_count
+        self.lines = lines
+
+    @property
+    def header(self):
+        """The ``@@`` header line of this hunk (first element of ``lines``)."""
+        return self.lines[0] if self.lines else ""
+
+    @property
+    def text(self):
+        """The full hunk text as a single string."""
+        return "".join(self.lines)
+
+    def new_line_range(self):
+        """Return ``(first, last)`` 1-based line numbers in the new file."""
+        return self.new_start, self.new_start + max(self.new_count, 1) - 1
+
+
+def get_diff_hunks(filepath):
+    """Return a list of :class:`Hunk` objects for *filepath*, or ``[]``.
+
+    Runs ``git diff HEAD -- <filepath>`` so that the diff reflects
+    changes relative to the last commit (both staged and unstaged
+    modifications are included via ``HEAD``).
+
+    Parameters
+    ----------
+    filepath : str
+        Absolute (or repo-relative) path to the file of interest.
+
+    Returns
+    -------
+    list[Hunk]
+        Parsed hunks in the order they appear in the diff.  Returns an
+        empty list when the file has no changes or on any error.
+    """
+    repo_root = get_git_root(filepath)
+    if repo_root is None:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "diff", "HEAD", "--", filepath],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        diff_text = result.stdout.decode("utf-8", errors="surrogateescape")
+        return _parse_hunks(diff_text)
+    except Exception:
+        return []
+
+
+def _parse_hunks(diff_text):
+    """Parse *diff_text* (unified diff) into a list of :class:`Hunk` objects."""
+    hunks = []
+    lines = diff_text.splitlines(keepends=True)
+    i = 0
+    # Skip the file header lines (--- / +++ / diff --git …)
+    while i < len(lines) and not lines[i].startswith("@@"):
+        i += 1
+
+    while i < len(lines):
+        line = lines[i]
+        m = _HUNK_HEADER_RE.match(line)
+        if not m:
+            i += 1
+            continue
+        old_start = int(m.group(1))
+        old_count = int(m.group(2)) if m.group(2) is not None else 1
+        new_start = int(m.group(3))
+        new_count = int(m.group(4)) if m.group(4) is not None else 1
+        hunk_lines = [line]
+        i += 1
+        while i < len(lines) and not lines[i].startswith("@@"):
+            hunk_lines.append(lines[i])
+            i += 1
+        hunks.append(Hunk(old_start, old_count, new_start, new_count, hunk_lines))
+
+    return hunks
