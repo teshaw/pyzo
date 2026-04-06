@@ -743,7 +743,7 @@ class GitPanel(QtWidgets.QWidget):
         self._log = QtWidgets.QPlainTextEdit(self)
         self._log.setReadOnly(True)
         self._log.setMaximumHeight(120)
-        font = QtGui.QFont("Monospace")
+        font = QtGui.QFont()
         font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
         self._log.setFont(font)
         self._log.setVisible(False)
@@ -826,7 +826,7 @@ class GitPanel(QtWidgets.QWidget):
         self._appendText(bytes(data).decode("utf-8", errors="replace"))
 
     def _onReadError(self):
-        # git sends progress/remote messages to stderr - show without colouring
+        # git sends progress/remote messages to stderr - show without coloring
         data = self._process.readAllStandardError()
         self._appendText(bytes(data).decode("utf-8", errors="replace"))
 
