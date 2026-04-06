@@ -168,3 +168,109 @@ def get_git_status(repo_root):
         return GitStatus(repo_root, status)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# subprocess-based git stash list
+# ---------------------------------------------------------------------------
+
+# Unit-separator (ASCII 0x1F) is used as a field delimiter inside format
+# strings because it cannot appear in commit messages or author names.
+_FS = "\x1f"
+
+
+def get_git_stash_list(repo_root):
+    """Return a list of stash entries for *repo_root*.
+
+    Each entry is a ``dict`` with keys:
+
+    * ``ref``     – stash reference, e.g. ``stash@{0}``
+    * ``message`` – stash description
+    * ``author``  – author name
+    * ``date``    – relative date string, e.g. ``2 hours ago``
+
+    Returns an empty list when there are no stashes or on failure.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "stash",
+                "list",
+                f"--format=%gd{_FS}%an{_FS}%ar{_FS}%s",
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        raw = result.stdout.decode("utf-8", errors="surrogateescape").strip()
+        if not raw:
+            return []
+        entries = []
+        for line in raw.splitlines():
+            parts = line.split(_FS)
+            if len(parts) >= 4:
+                entries.append(
+                    {
+                        "ref": parts[0],
+                        "author": parts[1],
+                        "date": parts[2],
+                        "message": parts[3],
+                    }
+                )
+        return entries
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# subprocess-based git log
+# ---------------------------------------------------------------------------
+
+
+def get_git_log(repo_root, max_count=100):
+    """Return a list of recent commit log entries for *repo_root*.
+
+    Each entry is a ``dict`` with keys:
+
+    * ``sha``     – abbreviated commit hash (7 characters)
+    * ``message`` – commit subject line
+    * ``author``  – author name
+    * ``date``    – relative date string, e.g. ``3 days ago``
+
+    Returns an empty list when there are no commits or on failure.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "log",
+                f"--format=%h{_FS}%s{_FS}%an{_FS}%ar",
+                f"-{max_count}",
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        raw = result.stdout.decode("utf-8", errors="surrogateescape").strip()
+        if not raw:
+            return []
+        entries = []
+        for line in raw.splitlines():
+            parts = line.split(_FS)
+            if len(parts) >= 4:
+                entries.append(
+                    {
+                        "sha": parts[0],
+                        "message": parts[1],
+                        "author": parts[2],
+                        "date": parts[3],
+                    }
+                )
+        return entries
+    except Exception:
+        return []
