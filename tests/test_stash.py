@@ -100,7 +100,7 @@ def test_get_stash_list_multiple_entries(tmp_path):
     repo = _make_git_repo(tmp_path)
     for i in range(3):
         _dirty(repo)
-        # rename file so next _dirty call creates a new one
+        # rename file so that next _dirty call creates a new one
         os.rename(
             os.path.join(repo, "dirty.txt"),
             os.path.join(repo, f"dirty{i}.txt"),

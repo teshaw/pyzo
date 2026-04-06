@@ -190,7 +190,12 @@ class StashWidget(QtWidgets.QWidget):
             self._afterOperation()
 
     def _afterOperation(self):
-        """Refresh the stash list and ask the file browser to update."""
+        """Refresh the stash list and ask the file browser to update.
+
+        The refresh is unconditional: even when a command fails the working
+        tree may have been partially modified (e.g. a conflicted apply), so
+        keeping the UI in sync is always the right thing to do.
+        """
         self._refreshList()
         self.refreshRequested.emit()
 
