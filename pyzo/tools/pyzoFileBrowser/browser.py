@@ -64,14 +64,10 @@ class Browser(QtWidgets.QWidget):
         # The tree transmits signals to widgets that need to know the path
         self._tree.dirChanged.connect(self._pathEdit.setPath)
         self._tree.dirChanged.connect(self._projects.setPath)
-        self._tree.dirChanged.connect(self._updateGitLabel)
+        self._tree.dirChanged.connect(self._updateGitPanel)
 
-        # Create git branch label (hidden when not in a git repo)
-        self._gitLabel = QtWidgets.QLabel("")
-        self._gitLabel.setVisible(False)
-        self._gitLabel.setStyleSheet(
-            "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
-        )
+        # Create git panel (hidden when not in a git repo)
+        self._gitPanel = GitPanel(self)
 
         self._layout()
 
@@ -99,7 +95,7 @@ class Browser(QtWidgets.QWidget):
         #
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
-        layout.addWidget(self._gitLabel)
+        layout.addWidget(self._gitPanel)
         layout.addWidget(self._tree)
         #
         subLayout = QtWidgets.QHBoxLayout()
@@ -111,16 +107,9 @@ class Browser(QtWidgets.QWidget):
     def cleanUp(self):
         self._fsProxy.stop()
 
-    def _updateGitLabel(self, path):
-        """Update the git branch label to reflect the repository at *path*."""
-        root = githelper.get_git_root(path)
-        if root:
-            branch = githelper.get_git_branch(root)
-            if branch:
-                self._gitLabel.setText("\u2387  " + branch)
-                self._gitLabel.setVisible(True)
-                return
-        self._gitLabel.setVisible(False)
+    def _updateGitPanel(self, path):
+        """Update the git panel to reflect the repository at *path*."""
+        self._gitPanel.setPath(path)
 
     def nameFilter(self):
         # return self._nameFilter.lineEdit().text()
@@ -708,3 +697,175 @@ class SearchFilter(LineEditWithToolButtons):
             config[option] = True
         # Update
         self.filterChanged.emit()
+
+
+class GitPanel(QtWidgets.QWidget):
+    """Widget showing the current git branch and providing Push/Pull operations.
+
+    The command output is streamed line-by-line to a collapsible
+    ``QPlainTextEdit`` log widget.  Errors (non-zero exit) are shown in red
+    and success is confirmed in green.  The Push and Pull buttons are
+    disabled while an operation is in-flight.
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        # Internal state
+        self._repo_root = None
+        self._process = None
+
+        # Branch label
+        self._branchLabel = QtWidgets.QLabel("")
+        self._branchLabel.setStyleSheet(
+            "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
+        )
+
+        # Push button
+        self._pushBut = QtWidgets.QToolButton(self)
+        self._pushBut.setText(translate("filebrowser", "Push"))
+        self._pushBut.setToolTip(translate("filebrowser", "Run: git push"))
+        self._pushBut.clicked.connect(self._onPush)
+
+        # Pull button
+        self._pullBut = QtWidgets.QToolButton(self)
+        self._pullBut.setText(translate("filebrowser", "Pull"))
+        self._pullBut.setToolTip(translate("filebrowser", "Run: git pull"))
+        self._pullBut.clicked.connect(self._onPull)
+
+        # Log toggle button
+        self._logToggleBut = QtWidgets.QToolButton(self)
+        self._logToggleBut.setText("\u25bc")  # ▼  (collapsed state)
+        self._logToggleBut.setToolTip(translate("filebrowser", "Toggle output log"))
+        self._logToggleBut.clicked.connect(self._toggleLog)
+
+        # Log widget (collapsible, read-only)
+        self._log = QtWidgets.QPlainTextEdit(self)
+        self._log.setReadOnly(True)
+        self._log.setMaximumHeight(120)
+        font = QtGui.QFont("Monospace")
+        font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+        self._log.setFont(font)
+        self._log.setVisible(False)
+
+        # Top-bar layout: branch label + buttons
+        topBar = QtWidgets.QHBoxLayout()
+        topBar.setContentsMargins(0, 0, 0, 0)
+        topBar.setSpacing(2)
+        topBar.addWidget(self._branchLabel, 1)
+        topBar.addWidget(self._pushBut)
+        topBar.addWidget(self._pullBut)
+        topBar.addWidget(self._logToggleBut)
+
+        # Main layout
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addLayout(topBar)
+        layout.addWidget(self._log)
+
+        self.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def setPath(self, path):
+        """Update the panel to reflect the repository at *path*."""
+        root = githelper.get_git_root(path)
+        if root:
+            branch = githelper.get_git_branch(root)
+            if branch:
+                self._repo_root = root
+                self._branchLabel.setText("\u2387  " + branch)
+                self.setVisible(True)
+                return
+        self._repo_root = None
+        self.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Button callbacks
+    # ------------------------------------------------------------------
+
+    def _onPush(self):
+        self._runGit(["git", "push"])
+
+    def _onPull(self):
+        self._runGit(["git", "pull"])
+
+    # ------------------------------------------------------------------
+    # Process management
+    # ------------------------------------------------------------------
+
+    def _runGit(self, cmd):
+        """Start *cmd* as a :class:`~QtCore.QProcess` and stream its output."""
+        if self._process is not None:
+            return  # Operation already in progress
+        if self._repo_root is None:
+            return
+
+        # Show log and disable buttons for the duration of the operation
+        self._log.setVisible(True)
+        self._logToggleBut.setText("\u25b2")  # ▲  (expanded state)
+        self._pushBut.setEnabled(False)
+        self._pullBut.setEnabled(False)
+
+        # Print the command being run as a header line
+        self._appendText("$ " + " ".join(cmd) + "\n")
+
+        # Create and start the process
+        self._process = QtCore.QProcess(self)
+        self._process.setWorkingDirectory(self._repo_root)
+        self._process.readyReadStandardOutput.connect(self._onReadOutput)
+        self._process.readyReadStandardError.connect(self._onReadError)
+        self._process.finished.connect(self._onFinished)
+        self._process.start(cmd[0], cmd[1:])
+
+    def _onReadOutput(self):
+        data = self._process.readAllStandardOutput()
+        self._appendText(bytes(data).decode("utf-8", errors="replace"))
+
+    def _onReadError(self):
+        # git sends progress/remote messages to stderr - show without colouring
+        data = self._process.readAllStandardError()
+        self._appendText(bytes(data).decode("utf-8", errors="replace"))
+
+    def _onFinished(self, exitCode, exitStatus):
+        if exitCode == 0:
+            self._appendText(
+                translate("filebrowser", "\u2713 Done\n"), "#2a7a2a"
+            )
+        else:
+            self._appendText(
+                translate("filebrowser", "\u2717 Failed (exit code {code})\n").format(
+                    code=exitCode
+                ),
+                "#cc0000",
+            )
+        self._pushBut.setEnabled(True)
+        self._pullBut.setEnabled(True)
+        self._process = None
+
+    # ------------------------------------------------------------------
+    # Log helpers
+    # ------------------------------------------------------------------
+
+    def _appendText(self, text, color=None):
+        """Append *text* to the log, optionally in *color* (CSS colour string)."""
+        cursor = self._log.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        if color is not None:
+            fmt = QtGui.QTextCharFormat()
+            fmt.setForeground(QtGui.QColor(color))
+            cursor.setCharFormat(fmt)
+        else:
+            cursor.setCharFormat(QtGui.QTextCharFormat())
+        cursor.insertText(text)
+        self._log.setTextCursor(cursor)
+        self._log.ensureCursorVisible()
+
+    def _toggleLog(self):
+        """Show or hide the log widget."""
+        visible = not self._log.isVisible()
+        self._log.setVisible(visible)
+        self._logToggleBut.setText("\u25b2" if visible else "\u25bc")
