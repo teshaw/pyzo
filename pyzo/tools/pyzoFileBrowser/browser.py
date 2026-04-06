@@ -133,10 +133,11 @@ class Browser(QtWidgets.QWidget):
             tip_parts.append(
                 "{} commit{} behind".format(behind, "s" if behind != 1 else "")
             )
-        if upstream:
+        if upstream and tip_parts:
             tip_parts[-1] += " " + upstream
         self._gitBadge.setToolTip(", ".join(tip_parts))
-        self._gitBadge.setVisible(self._gitLabel.isVisible())
+        # Show the badge only when we are inside a git repository
+        self._gitBadge.setVisible(True)
 
     def _onApplicationStateChanged(self, state):
         """Pause the fetch worker when the application loses focus."""

@@ -77,21 +77,12 @@ class TestGetAheadBehind:
 
     def test_ahead_count(self, tmp_path):
         """Local commits not yet pushed should be counted as ahead."""
-        # Create a "remote" bare repo and clone it
-        bare = str(tmp_path / "bare.git")
-        clone = str(tmp_path / "clone")
-        os.makedirs(bare)
-        os.makedirs(clone)
-        _init_repo(bare)
-        _git("init", "--bare", cwd=bare)
-
-        # Set up a fresh bare repo and push an initial commit
         origin = str(tmp_path / "origin.git")
         local = str(tmp_path / "local")
         os.makedirs(origin)
-        _git("init", "--bare", cwd=origin)
-
         os.makedirs(local)
+
+        _git("init", "--bare", cwd=origin)
         _init_repo(local)
         _git("remote", "add", "origin", origin, cwd=local)
         _git("push", "-u", "origin", "HEAD", cwd=local)

@@ -314,11 +314,14 @@ class GitFetchWorker(threading.Thread):
             if self._stop_event.is_set():
                 break
 
+            # Clear any pending trigger before fetching so we don't immediately
+            # re-enter the loop if a new trigger arrives during the fetch.
+            self._trigger_event.clear()
+
             with self._lock:
                 repo = self._repo_root
 
             if repo:
-                self._trigger_event.clear()
                 git_fetch(repo)
                 if not self._stop_event.is_set():
                     ahead, behind = get_ahead_behind(repo)
