@@ -131,6 +131,24 @@ class GitStatus:
 # ---------------------------------------------------------------------------
 
 
+def git_stash(repo_root, message):
+    """Create a new stash entry with *message* in *repo_root*.
+
+    Runs ``git stash push -m <message>`` and returns ``True`` on success,
+    ``False`` otherwise (e.g. nothing to stash, git not found).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "stash", "push", "-m", message],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def get_git_status(repo_root):
     """Return a :class:`GitStatus` for *repo_root*, or ``None`` on failure.
 

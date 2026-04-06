@@ -73,6 +73,13 @@ class Browser(QtWidgets.QWidget):
             "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
         )
 
+        # Create stash button (shown alongside the git label)
+        self._stashBut = QtWidgets.QToolButton(self)
+        self._stashBut.setText(translate("filebrowser", "Stash"))
+        self._stashBut.setToolTip(translate("filebrowser", "Stash changes"))
+        self._stashBut.setVisible(False)
+        self._stashBut.clicked.connect(self._onStashClicked)
+
         self._layout()
 
         # Set and sync path ...
@@ -99,7 +106,13 @@ class Browser(QtWidgets.QWidget):
         #
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
-        layout.addWidget(self._gitLabel)
+        # Git info row: branch label + stash button
+        gitRow = QtWidgets.QHBoxLayout()
+        gitRow.setContentsMargins(0, 0, 0, 0)
+        gitRow.setSpacing(2)
+        gitRow.addWidget(self._gitLabel, 1)
+        gitRow.addWidget(self._stashBut, 0)
+        layout.addLayout(gitRow)
         layout.addWidget(self._tree)
         #
         subLayout = QtWidgets.QHBoxLayout()
@@ -119,8 +132,28 @@ class Browser(QtWidgets.QWidget):
             if branch:
                 self._gitLabel.setText("\u2387  " + branch)
                 self._gitLabel.setVisible(True)
+                self._stashBut.setVisible(True)
                 return
         self._gitLabel.setVisible(False)
+        self._stashBut.setVisible(False)
+
+    def _onStashClicked(self):
+        """Prompt for a stash message and run ``git stash push -m <message>``."""
+        path = self._tree.path()
+        root = githelper.get_git_root(path)
+        if not root:
+            return
+        message, ok = QtWidgets.QInputDialog.getText(
+            self,
+            translate("filebrowser", "Stash changes"),
+            translate("filebrowser", "Stash message:"),
+        )
+        if not ok:
+            return
+        githelper.git_stash(root, message)
+        # Refresh the tree and git label to reflect the new stash state
+        self._tree.onChanged()
+        self._updateGitLabel(path)
 
     def nameFilter(self):
         # return self._nameFilter.lineEdit().text()
