@@ -127,6 +127,67 @@ class GitStatus:
 
 
 # ---------------------------------------------------------------------------
+# Branch name validation and creation
+# ---------------------------------------------------------------------------
+
+# Characters that are invalid in git branch names (per git-check-ref-format).
+_INVALID_BRANCH_CHARS = set(" \t\n\x00\x7f\\~^:?*[")
+
+
+def is_valid_branch_name(name):
+    """Return ``True`` if *name* is a valid git branch name.
+
+    Validates against ``git check-ref-format`` rules:
+
+    * Must not be empty.
+    * Must not contain spaces, control characters, or the characters
+      ``~ ^ : ? * [ \\ \x7f``.
+    * Must not start or end with a dot (``.``).
+    * Must not contain consecutive dots (``..``).
+    * Must not start with a dash (``-``).
+    * Must not end with ``.lock``.
+    * Must not be the single character ``@``.
+    """
+    if not name:
+        return False
+    if any(c in _INVALID_BRANCH_CHARS for c in name):
+        return False
+    if name.startswith(".") or name.endswith("."):
+        return False
+    if ".." in name:
+        return False
+    if name.startswith("-"):
+        return False
+    if name.endswith(".lock"):
+        return False
+    if name == "@":
+        return False
+    return True
+
+
+def create_branch(repo_root, name):
+    """Create and checkout a new branch *name* in *repo_root*.
+
+    Runs ``git checkout -b <name>`` and returns ``(True, '')`` on success,
+    or ``(False, error_message)`` on failure.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "checkout", "-b", name],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=10,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True, ""
+        msg = (result.stderr or result.stdout).strip()
+        return False, msg
+    except Exception as exc:
+        return False, str(exc)
+
+
+# ---------------------------------------------------------------------------
 # subprocess-based git status
 # ---------------------------------------------------------------------------
 

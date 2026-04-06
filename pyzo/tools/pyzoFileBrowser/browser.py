@@ -73,6 +73,50 @@ class Browser(QtWidgets.QWidget):
             "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
         )
 
+        # Button to reveal the "create branch" input row
+        self._newBranchBut = QtWidgets.QToolButton(self)
+        self._newBranchBut.setIcon(pyzo.icons["add"])
+        self._newBranchBut.setIconSize(QtCore.QSize(16, 16))
+        self._newBranchBut.setStyleSheet("QToolButton { border: none; padding: 0px; }")
+        self._newBranchBut.setToolTip(translate("filebrowser", "Create new branch"))
+        self._newBranchBut.setVisible(False)
+        self._newBranchBut.clicked.connect(self._toggleBranchInput)
+
+        # Inline row for creating a new branch (hidden by default)
+        self._branchCreateRow = QtWidgets.QWidget(self)
+        self._branchCreateRow.setVisible(False)
+        self._branchNameEdit = QtWidgets.QLineEdit(self._branchCreateRow)
+        self._branchNameEdit.setPlaceholderText(
+            translate("filebrowser", "New branch name")
+        )
+        self._branchCreateBut = QtWidgets.QPushButton(
+            translate("filebrowser", "Create"), self._branchCreateRow
+        )
+        self._branchCancelBut = QtWidgets.QToolButton(self._branchCreateRow)
+        self._branchCancelBut.setIcon(pyzo.icons["cancel"])
+        self._branchCancelBut.setIconSize(QtCore.QSize(16, 16))
+        self._branchCancelBut.setStyleSheet(
+            "QToolButton { border: none; padding: 0px; }"
+        )
+        self._branchCancelBut.setToolTip(translate("filebrowser", "Cancel"))
+        rowLayout = QtWidgets.QHBoxLayout(self._branchCreateRow)
+        rowLayout.setContentsMargins(0, 0, 0, 0)
+        rowLayout.setSpacing(2)
+        rowLayout.addWidget(self._branchNameEdit)
+        rowLayout.addWidget(self._branchCreateBut)
+        rowLayout.addWidget(self._branchCancelBut)
+        self._branchCreateBut.clicked.connect(self._createBranch)
+        self._branchCancelBut.clicked.connect(self._toggleBranchInput)
+        self._branchNameEdit.returnPressed.connect(self._createBranch)
+
+        # Status label for git errors (hidden by default)
+        self._gitErrorLabel = QtWidgets.QLabel("")
+        self._gitErrorLabel.setVisible(False)
+        self._gitErrorLabel.setStyleSheet(
+            "QLabel { color: red; padding: 1px 2px; font-size: small; }"
+        )
+        self._gitErrorLabel.setWordWrap(True)
+
         self._layout()
 
         # Set and sync path ...
@@ -99,7 +143,18 @@ class Browser(QtWidgets.QWidget):
         #
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
-        layout.addWidget(self._gitLabel)
+        # Git row: branch label + "new branch" button
+        gitRow = QtWidgets.QWidget(self)
+        gitRowLayout = QtWidgets.QHBoxLayout(gitRow)
+        gitRowLayout.setContentsMargins(0, 0, 0, 0)
+        gitRowLayout.setSpacing(2)
+        gitRowLayout.addWidget(self._gitLabel)
+        gitRowLayout.addStretch()
+        gitRowLayout.addWidget(self._newBranchBut)
+        self._gitRow = gitRow
+        layout.addWidget(gitRow)
+        layout.addWidget(self._branchCreateRow)
+        layout.addWidget(self._gitErrorLabel)
         layout.addWidget(self._tree)
         #
         subLayout = QtWidgets.QHBoxLayout()
@@ -119,8 +174,64 @@ class Browser(QtWidgets.QWidget):
             if branch:
                 self._gitLabel.setText("\u2387  " + branch)
                 self._gitLabel.setVisible(True)
+                self._newBranchBut.setVisible(True)
+                # Hide create-branch row and clear any previous error when
+                # the path changes (e.g. the user navigated to another repo).
+                self._branchCreateRow.setVisible(False)
+                self._gitErrorLabel.setVisible(False)
+                self._branchNameEdit.clear()
                 return
         self._gitLabel.setVisible(False)
+        self._newBranchBut.setVisible(False)
+        self._branchCreateRow.setVisible(False)
+        self._gitErrorLabel.setVisible(False)
+
+    def _toggleBranchInput(self):
+        """Show or hide the inline branch-creation row."""
+        visible = self._branchCreateRow.isVisible()
+        self._branchCreateRow.setVisible(not visible)
+        self._gitErrorLabel.setVisible(False)
+        if not visible:
+            self._branchNameEdit.clear()
+            self._branchNameEdit.setFocus()
+
+    def _createBranch(self):
+        """Validate the branch name and run ``git checkout -b <name>``."""
+        name = self._branchNameEdit.text().strip()
+
+        # Validate branch name
+        if not githelper.is_valid_branch_name(name):
+            self._gitErrorLabel.setText(
+                translate(
+                    "filebrowser",
+                    "Invalid branch name: must not be empty or contain spaces / "
+                    "invalid characters.",
+                )
+            )
+            self._gitErrorLabel.setVisible(True)
+            return
+
+        # Find git root for the current path
+        path = self._tree.path()
+        root = githelper.get_git_root(path)
+        if not root:
+            self._gitErrorLabel.setText(
+                translate("filebrowser", "Not inside a git repository.")
+            )
+            self._gitErrorLabel.setVisible(True)
+            return
+
+        # Run git checkout -b <name>
+        success, msg = githelper.create_branch(root, name)
+        if success:
+            # Hide the input row and update the branch label
+            self._branchCreateRow.setVisible(False)
+            self._gitErrorLabel.setVisible(False)
+            self._branchNameEdit.clear()
+            self._updateGitLabel(path)
+        else:
+            self._gitErrorLabel.setText(msg or translate("filebrowser", "Failed to create branch."))
+            self._gitErrorLabel.setVisible(True)
 
     def nameFilter(self):
         # return self._nameFilter.lineEdit().text()
