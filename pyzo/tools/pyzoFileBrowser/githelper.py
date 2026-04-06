@@ -2,12 +2,15 @@
 Git helper utilities for the pyzo file browser.
 
 Provides lightweight, dependency-free git integration using only the
-Python standard library.  subprocess is used only for `git status`.
+Python standard library.  subprocess is used only for `git status` and
+`git diff`.
 """
 
 import os
 import os.path as op
+import re
 import subprocess
+from dataclasses import dataclass
 
 
 # ---------------------------------------------------------------------------
@@ -168,3 +171,127 @@ def get_git_status(repo_root):
         return GitStatus(repo_root, status)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Hunk - structured diff hunk data for the diff gutter
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Hunk:
+    """Represents a single diff hunk from ``git diff`` output.
+
+    Attributes
+    ----------
+    old_start : int
+        Starting line number in the old (a) version.
+    old_count : int
+        Number of lines in the old (a) version.
+    new_start : int
+        Starting line number in the new (b) version.
+    new_count : int
+        Number of lines in the new (b) version.
+    """
+
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+
+
+# Compiled regex for the ``@@ -a,b +c,d @@`` hunk header.
+# The count fields (,b and ,d) are optional; when absent they default to 1.
+_HUNK_RE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@",
+    re.MULTILINE,
+)
+
+
+def _parse_hunks(diff_output):
+    """Parse *diff_output* and return a list of :class:`Hunk` objects.
+
+    Parameters
+    ----------
+    diff_output : str
+        Raw output from ``git diff``.
+
+    Returns
+    -------
+    list[Hunk]
+        Parsed hunks, or an empty list for binary files or empty output.
+    """
+    if "Binary files" in diff_output:
+        return []
+    hunks = []
+    for m in _HUNK_RE.finditer(diff_output):
+        old_start = int(m.group(1))
+        old_count = int(m.group(2)) if m.group(2) is not None else 1
+        new_start = int(m.group(3))
+        new_count = int(m.group(4)) if m.group(4) is not None else 1
+        hunks.append(
+            Hunk(
+                old_start=old_start,
+                old_count=old_count,
+                new_start=new_start,
+                new_count=new_count,
+            )
+        )
+    return hunks
+
+
+def get_hunk_diff(filepath):
+    """Return a list of :class:`Hunk` objects for *filepath*.
+
+    Runs ``git diff HEAD -- <file>`` to obtain the diff of working-tree
+    changes against HEAD.  For files that are staged but have no
+    working-tree changes, falls back to ``git diff --cached -- <file>``
+    to capture staged-only hunks.
+
+    Parameters
+    ----------
+    filepath : str or pathlib.Path
+        Absolute or relative path to the file to diff.
+
+    Returns
+    -------
+    list[Hunk]
+        Parsed diff hunks.  An empty list is returned when:
+
+        * ``git`` is not available or exits with a non-zero status,
+        * the file is not inside a git repository,
+        * the file is not tracked / has no changes,
+        * the file is binary.
+
+    Notes
+    -----
+    Designed to be called from a ``QThread`` worker so that it does not
+    block the Qt main thread.
+    """
+    filepath = str(filepath)
+    repo_root = get_git_root(filepath)
+    if repo_root is None:
+        return []
+
+    def _run_diff(extra_args):
+        try:
+            result = subprocess.run(
+                ["git", "diff"] + extra_args + ["--", filepath],
+                cwd=repo_root,
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return ""
+            return result.stdout.decode("utf-8", errors="surrogateescape")
+        except Exception:
+            return ""
+
+    # First try working-tree diff against HEAD (covers staged + unstaged).
+    output = _run_diff(["HEAD"])
+    if output:
+        return _parse_hunks(output)
+
+    # Fall back to staged-only diff for files that are fully staged.
+    output = _run_diff(["--cached"])
+    return _parse_hunks(output)
