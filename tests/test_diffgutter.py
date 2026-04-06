@@ -276,6 +276,7 @@ def test_file_load_clears_old_hunks_immediately(editor, git_repo, qt_app):
     editor.setDiffGutterFilePath(str(file_path))
 
     # Drain the event loop until the 0 ms timer fires
+    # QDeadlineTimer argument is in milliseconds; 2000 ms = 2 seconds.
     deadline = QtCore.QDeadlineTimer(2000)
     timer = editor._DiffGutter__diffDebounceTimer
     while timer.isActive() and not deadline.hasExpired():

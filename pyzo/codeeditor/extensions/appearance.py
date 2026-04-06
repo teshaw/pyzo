@@ -1644,6 +1644,12 @@ class DiffGutter:
         file save, file rename).  Triggers an immediate diff recompute
         (deferred to the next event-loop iteration via a 0 ms timer so the
         UI is never blocked on the calling thread).
+
+        Parameters
+        ----------
+        path : str or None
+            Absolute path to the file.  Pass ``None`` or an empty string to
+            clear the current path (the gutter will be repainted empty).
         """
         self._diffGutterFilePath = path or ""
         # Fire immediately (next event-loop tick) rather than waiting for
@@ -1729,6 +1735,8 @@ class DiffGutter:
             if result.returncode != 0:
                 self.__diffGutterArea.update()
                 return
+            # Decode with 'replace' so a file with unusual encoding (e.g. a
+            # binary file accidentally staged) never crashes the gutter.
             head_text = result.stdout.decode("utf-8", errors="replace")
         except Exception:
             self.__diffGutterArea.update()
