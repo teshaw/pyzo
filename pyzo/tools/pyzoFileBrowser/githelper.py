@@ -9,6 +9,9 @@ import os
 import os.path as op
 import subprocess
 
+# XY status codes that indicate an unmerged (conflict) state.
+_CONFLICT_CODES = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
+
 
 # ---------------------------------------------------------------------------
 # Pure-Python helpers (no subprocess needed)
@@ -113,6 +116,22 @@ class GitStatus:
                 return self._CHAR_COLOR[ch]
         return None
 
+    def is_conflict_xy(self, xy):
+        """Return ``True`` if *xy* represents an unmerged (conflict) state."""
+        return xy.strip() in _CONFLICT_CODES
+
+    def has_conflicts(self):
+        """Return ``True`` if any file is in an unmerged (conflict) state."""
+        return any(xy.strip() in _CONFLICT_CODES for xy in self._status.values())
+
+    def get_conflicted_files(self):
+        """Return a list of absolute paths for files in conflict."""
+        return [
+            path
+            for path, xy in self._status.items()
+            if xy.strip() in _CONFLICT_CODES
+        ]
+
     def get_dir_color(self, path):
         """Return an RGB tuple if any file under *path* has a status, else ``None``."""
         prefix = op.normcase(path)
@@ -168,3 +187,29 @@ def get_git_status(repo_root):
         return GitStatus(repo_root, status)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Branch listing
+# ---------------------------------------------------------------------------
+
+
+def list_git_branches(repo_root):
+    """Return a sorted list of local branch names for *repo_root*.
+
+    Returns an empty list when git is unavailable or *repo_root* is not a
+    git repository.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        lines = result.stdout.decode("utf-8", errors="replace").splitlines()
+        return sorted(line.strip() for line in lines if line.strip())
+    except Exception:
+        return []

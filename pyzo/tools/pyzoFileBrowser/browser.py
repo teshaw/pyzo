@@ -66,12 +66,29 @@ class Browser(QtWidgets.QWidget):
         self._tree.dirChanged.connect(self._projects.setPath)
         self._tree.dirChanged.connect(self._updateGitLabel)
 
-        # Create git branch label (hidden when not in a git repo)
+        # Create git toolbar: branch label + merge button (hidden outside git repos)
+        self._gitBar = QtWidgets.QWidget()
+        _git_bar_layout = QtWidgets.QHBoxLayout(self._gitBar)
+        _git_bar_layout.setContentsMargins(0, 0, 0, 0)
+        _git_bar_layout.setSpacing(4)
+
         self._gitLabel = QtWidgets.QLabel("")
-        self._gitLabel.setVisible(False)
         self._gitLabel.setStyleSheet(
             "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
         )
+        _git_bar_layout.addWidget(self._gitLabel)
+        _git_bar_layout.addStretch()
+
+        self._mergeBtn = QtWidgets.QToolButton()
+        self._mergeBtn.setText("Merge…")
+        self._mergeBtn.setToolTip("Merge or rebase a branch into the current branch")
+        self._mergeBtn.setStyleSheet(
+            "QToolButton { border: none; color: gray; font-size: 10px; padding: 1px 4px; }"
+        )
+        self._mergeBtn.clicked.connect(self._openMergeDialog)
+        _git_bar_layout.addWidget(self._mergeBtn)
+
+        self._gitBar.setVisible(False)
 
         self._layout()
 
@@ -99,7 +116,7 @@ class Browser(QtWidgets.QWidget):
         #
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
-        layout.addWidget(self._gitLabel)
+        layout.addWidget(self._gitBar)
         layout.addWidget(self._tree)
         #
         subLayout = QtWidgets.QHBoxLayout()
@@ -118,9 +135,26 @@ class Browser(QtWidgets.QWidget):
             branch = githelper.get_git_branch(root)
             if branch:
                 self._gitLabel.setText("\u2387  " + branch)
-                self._gitLabel.setVisible(True)
+                self._gitBar.setVisible(True)
                 return
-        self._gitLabel.setVisible(False)
+        self._gitBar.setVisible(False)
+
+    def _openMergeDialog(self):
+        """Open the Merge / Rebase dialog for the current repository."""
+        from .mergedialogs import MergeRebaseDialog
+
+        path = self._tree.path()
+        root = githelper.get_git_root(path)
+        if root is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "No Git Repository",
+                "The current directory is not inside a git repository.",
+            )
+            return
+        branch = githelper.get_git_branch(root)
+        dlg = MergeRebaseDialog(self, root, current_branch=branch)
+        dlg.exec()
 
     def nameFilter(self):
         # return self._nameFilter.lineEdit().text()
