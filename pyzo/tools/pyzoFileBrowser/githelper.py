@@ -118,18 +118,18 @@ class GitStatus:
 
     def is_conflict_xy(self, xy):
         """Return ``True`` if *xy* represents an unmerged (conflict) state."""
-        return xy.strip() in _CONFLICT_CODES
+        return xy in _CONFLICT_CODES
 
     def has_conflicts(self):
         """Return ``True`` if any file is in an unmerged (conflict) state."""
-        return any(xy.strip() in _CONFLICT_CODES for xy in self._status.values())
+        return any(xy in _CONFLICT_CODES for xy in self._status.values())
 
     def get_conflicted_files(self):
         """Return a list of absolute paths for files in conflict."""
         return [
             path
             for path, xy in self._status.items()
-            if xy.strip() in _CONFLICT_CODES
+            if xy in _CONFLICT_CODES
         ]
 
     def get_dir_color(self, path):

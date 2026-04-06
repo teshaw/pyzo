@@ -223,7 +223,7 @@ class MergeRebaseDialog(QtWidgets.QDialog):
         )
         for abs_path in status.get_conflicted_files():
             rel = op.relpath(abs_path, self._repo_root)
-            item = QtWidgets.QListWidgetItem(warn_icon, "⚠  " + rel)
+            item = QtWidgets.QListWidgetItem(warn_icon, rel)
             self._conflictList.addItem(item)
 
         self._conflictPanel.setVisible(True)

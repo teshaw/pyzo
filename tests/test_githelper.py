@@ -102,7 +102,8 @@ def test_list_git_branches_single_branch():
     with tempfile.TemporaryDirectory() as tmp:
         _init_repo(tmp)
         # Create an initial commit so the branch exists
-        (open(op.join(tmp, "f.txt"), "w")).write("hi")
+        with open(op.join(tmp, "f.txt"), "w") as fh:
+            fh.write("hi")
         subprocess.run(["git", "add", "."], cwd=tmp, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True,
                        capture_output=True)
@@ -113,7 +114,8 @@ def test_list_git_branches_single_branch():
 def test_list_git_branches_multiple():
     with tempfile.TemporaryDirectory() as tmp:
         _init_repo(tmp)
-        (open(op.join(tmp, "f.txt"), "w")).write("hi")
+        with open(op.join(tmp, "f.txt"), "w") as fh:
+            fh.write("hi")
         subprocess.run(["git", "add", "."], cwd=tmp, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True,
                        capture_output=True)
