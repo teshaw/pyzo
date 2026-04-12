@@ -2,6 +2,12 @@
 Code editor extensions that change its appearance
 """
 
+import dataclasses
+import difflib
+import os
+import re
+import subprocess
+
 from ..qt import QtGui, QtCore, QtWidgets
 
 Qt = QtCore.Qt
@@ -1440,3 +1446,310 @@ class SyntaxHighlighting:
 
         # Restyle, use setStyle for lazy updating
         self.setStyle()
+
+
+@dataclasses.dataclass
+class Hunk:
+    """Represents a single changed region from a unified diff hunk header.
+
+    Attributes
+    ----------
+    old_start : int
+        1-based line number in the original (HEAD) file where the hunk starts.
+    old_count : int
+        Number of lines from the original file affected by this hunk.
+    new_start : int
+        1-based line number in the new (editor) content where the hunk starts.
+    new_count : int
+        Number of lines in the new content produced by this hunk.
+    kind : str
+        One of ``"add"``, ``"modify"``, or ``"delete"``.
+    """
+
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    kind: str  # "add", "modify", "delete"
+
+
+def _parse_hunks(unified_diff_lines):
+    """Parse ``@@ -a,b +c,d @@`` headers from a unified diff into :class:`Hunk` objects.
+
+    Parameters
+    ----------
+    unified_diff_lines : iterable of str
+        Lines of a unified diff (e.g. from :func:`difflib.unified_diff`).
+
+    Returns
+    -------
+    list of Hunk
+    """
+    hunk_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+    hunks = []
+    for line in unified_diff_lines:
+        m = hunk_re.match(line)
+        if m:
+            old_start = int(m.group(1))
+            old_count = int(m.group(2)) if m.group(2) is not None else 1
+            new_start = int(m.group(3))
+            new_count = int(m.group(4)) if m.group(4) is not None else 1
+            if old_count == 0:
+                kind = "add"
+            elif new_count == 0:
+                kind = "delete"
+            else:
+                kind = "modify"
+            hunks.append(Hunk(old_start, old_count, new_start, new_count, kind))
+    return hunks
+
+
+class DiffGutter:
+    """Extension that shows a narrow diff gutter next to the editor.
+
+    A colored bar is drawn for each changed region compared to the file's
+    git HEAD state:
+
+    * **green** – lines added (no corresponding lines in HEAD)
+    * **orange** – lines modified (replaced existing lines)
+    * **red** – lines deleted (a small marker between surrounding lines)
+
+    The diff is recomputed via a single-shot :class:`QTimer` (see
+    :attr:`_DIFF_DEBOUNCE_MS`) that restarts on every ``textChanged`` event
+    so that a ``git`` subprocess is not spawned on every keystroke.
+
+    The file path must be provided by calling :meth:`setDiffGutterFilePath`
+    whenever the editor's associated file changes (open, save-as).  No
+    subprocess is launched while the path is unknown or the file is outside
+    a git repository.
+    """
+
+    _DIFF_GUTTER_WIDTH = 4  # pixels
+
+    #: Debounce delay in milliseconds before recomputing the diff after a
+    #: text change.  Chosen to avoid spawning ``git`` on every keystroke.
+    _DIFF_DEBOUNCE_MS = 500
+
+    #: Timeout in seconds for the ``git show`` subprocess call.
+    _GIT_SUBPROCESS_TIMEOUT = 5
+
+    # Colors for the three hunk kinds
+    _DIFF_GUTTER_COLORS = {
+        "add": "#44bb44",
+        "modify": "#e8a000",
+        "delete": "#cc4444",
+    }
+
+    class __DiffGutterArea(QtWidgets.QWidget):
+        """Widget responsible for drawing the diff gutter."""
+
+        def __init__(self, codeEditor):
+            super().__init__(codeEditor)
+
+        def paintEvent(self, event):
+            editor = self.parent()
+            if not editor.showDiffGutter():
+                return
+
+            w = editor._DIFF_GUTTER_WIDTH
+            painter = QtGui.QPainter()
+            painter.begin(self)
+
+            # Draw plain background
+            painter.fillRect(
+                QtCore.QRect(0, 0, w, editor.height()),
+                editor.palette().color(editor.backgroundRole()),
+            )
+
+            hunks = editor._diffHunks
+            if not hunks:
+                painter.end()
+                return
+
+            offset = editor.contentOffset()
+
+            for hunk in hunks:
+                color = QtGui.QColor(
+                    editor._DIFF_GUTTER_COLORS.get(hunk.kind, "#999999")
+                )
+
+                if hunk.kind == "delete":
+                    # A deletion has new_count == 0.  Show a thin bar just
+                    # below the last surviving line (new_start - 1, 0-based).
+                    block_nr = max(0, hunk.new_start - 1)
+                    block = editor.document().findBlockByNumber(block_nr)
+                    if block.isValid():
+                        geo = editor.blockBoundingGeometry(block).translated(offset)
+                        y = int(geo.bottom()) - 2
+                        painter.fillRect(QtCore.QRect(0, y, w, 3), color)
+                else:
+                    # "add" or "modify": fill the band covering all new lines.
+                    start_nr = hunk.new_start - 1  # 0-based
+                    end_nr = hunk.new_start + hunk.new_count - 2  # 0-based, inclusive
+                    start_block = editor.document().findBlockByNumber(start_nr)
+                    end_block = editor.document().findBlockByNumber(end_nr)
+                    if start_block.isValid():
+                        y1 = int(
+                            editor.blockBoundingGeometry(start_block)
+                            .translated(offset)
+                            .top()
+                        )
+                        if end_block.isValid():
+                            y2 = int(
+                                editor.blockBoundingGeometry(end_block)
+                                .translated(offset)
+                                .bottom()
+                            )
+                        else:
+                            y2 = y1 + editor.fontMetrics().height()
+                        painter.fillRect(
+                            QtCore.QRect(0, y1, w, max(1, y2 - y1)),
+                            color,
+                        )
+
+            painter.end()
+
+    def __init__(self, *args, **kwds):
+        self.__diffGutterArea = None
+        self.__diffGutterLeftMarginHandle = None
+        self._diffHunks = []
+        self._diffGutterFilePath = ""
+        super().__init__(*args, **kwds)
+
+        # Create the gutter widget (after super().__init__ so the Qt widget exists)
+        self.__diffGutterArea = self.__DiffGutterArea(self)
+        self.__diffGutterLeftMarginHandle = self._setLeftBarMargin(
+            self.__diffGutterLeftMarginHandle, self._getDiffGutterWidth()
+        )
+
+        # Single-shot debounce timer; interval set from class constant
+        self.__diffDebounceTimer = QtCore.QTimer(self)
+        self.__diffDebounceTimer.setSingleShot(True)
+        self.__diffDebounceTimer.setInterval(self._DIFF_DEBOUNCE_MS)
+        self.__diffDebounceTimer.timeout.connect(self._recomputeDiff)
+
+        # Restart the timer on every text change
+        self.textChanged.connect(self.__onTextChangedForDiff)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def setDiffGutterFilePath(self, path):
+        """Set the file path used to compute the diff against git HEAD.
+
+        Call this whenever the editor's associated file changes (open, save-as,
+        rename).  Triggers an immediate diff recompute (deferred to the next
+        event-loop iteration via a 0 ms timer so the UI is never blocked).
+        """
+        self._diffGutterFilePath = path or ""
+        # Fire immediately (next event loop tick) rather than waiting 500 ms
+        self.__diffDebounceTimer.start(0)
+
+    def showDiffGutter(self):
+        """Return whether the diff gutter is currently visible."""
+        return self.__showDiffGutter
+
+    @ce_option(True)
+    def setShowDiffGutter(self, value):
+        """Show or hide the diff gutter."""
+        self.__showDiffGutter = bool(value)
+        # This setter is called before __init__ finishes (via __initOptions),
+        # so guard against the area not yet existing.
+        if self.__diffGutterArea:
+            if self.__showDiffGutter:
+                self.__diffGutterArea.show()
+            else:
+                self.__diffGutterArea.hide()
+            if self.__diffGutterLeftMarginHandle is not None:
+                self._setLeftBarMargin(
+                    self.__diffGutterLeftMarginHandle, self._getDiffGutterWidth()
+                )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def __onTextChangedForDiff(self):
+        """Restart the debounce timer whenever the document changes."""
+        self.__diffDebounceTimer.start()
+
+    def _getDiffGutterWidth(self):
+        if not self.__showDiffGutter:
+            return 0
+        return self._DIFF_GUTTER_WIDTH
+
+    def _recomputeDiff(self):
+        """Recompute the diff between editor content and the git HEAD blob.
+
+        Clears :attr:`_diffHunks` and repaints the gutter.  No subprocess is
+        spawned when the file path is unset or the file is outside a git repo.
+        """
+        self._diffHunks = []
+
+        if not self._diffGutterFilePath:
+            self.__diffGutterArea.update()
+            return
+
+        # Locate the git root by walking up the directory tree.
+        # We avoid importing pyzo.tools to keep this usable before pyzo is
+        # fully initialised (the tools package __init__ requires pyzo.translate).
+        git_root = None
+        try:
+            current = os.path.abspath(
+                os.path.dirname(self._diffGutterFilePath)
+            )
+            while True:
+                if os.path.isdir(os.path.join(current, ".git")):
+                    git_root = current
+                    break
+                parent = os.path.dirname(current)
+                if parent == current:
+                    break
+                current = parent
+        except Exception:
+            git_root = None
+
+        if git_root is None:
+            self.__diffGutterArea.update()
+            return
+
+        # Build the relative path with forward slashes as git expects
+        relpath = os.path.relpath(self._diffGutterFilePath, git_root)
+        relpath = relpath.replace(os.sep, "/")
+
+        # Fetch the HEAD blob
+        try:
+            result = subprocess.run(
+                ["git", "show", "HEAD:" + relpath],
+                cwd=git_root,
+                capture_output=True,
+                timeout=self._GIT_SUBPROCESS_TIMEOUT,
+            )
+            if result.returncode != 0:
+                self.__diffGutterArea.update()
+                return
+            head_text = result.stdout.decode("utf-8", errors="replace")
+        except Exception:
+            self.__diffGutterArea.update()
+            return
+
+        # Compute unified diff (no context lines) and parse hunk headers
+        head_lines = head_text.splitlines(keepends=True)
+        current_lines = self.toPlainText().splitlines(keepends=True)
+        diff_lines = difflib.unified_diff(head_lines, current_lines, n=0)
+        self._diffHunks = _parse_hunks(diff_lines)
+
+        self.__diffGutterArea.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        rect = self.contentsRect()
+        m = self._getMarginBeforeLeftBar(self.__diffGutterLeftMarginHandle)
+        w = self._getDiffGutterWidth()
+        self.__diffGutterArea.setGeometry(rect.x() + m, rect.y(), w, rect.height())
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        w = self._getDiffGutterWidth()
+        self.__diffGutterArea.update(0, 0, w, self.height())
