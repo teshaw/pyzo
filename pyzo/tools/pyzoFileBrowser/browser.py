@@ -13,6 +13,193 @@ from .tree import Tree
 from .utils import cleanpath, isdir
 
 
+class StashWidget(QtWidgets.QWidget):
+    """Panel shown below the git branch label that lists stash entries.
+
+    Each entry has **Apply**, **Pop**, and **Drop** buttons.  A **Stash
+    changes** button at the top lets the user push new stash entries with an
+    optional message.  The widget is hidden automatically when the current
+    directory is not inside a git repository.
+    """
+
+    #: Emitted after any stash operation so the file-browser tree can refresh
+    #: its git-status colours (the "Changes view").
+    refreshRequested = QtCore.Signal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._repo_root = None
+
+        # --- "Stash changes" button in the header row ---
+        self._pushButton = QtWidgets.QPushButton(
+            translate("filebrowser", "Stash changes")
+        )
+        self._pushButton.setToolTip(
+            translate("filebrowser", "Stash current changes (git stash push)")
+        )
+        self._pushButton.clicked.connect(self._onStashChanges)
+
+        # --- List widget that holds one row per stash entry ---
+        self._list = QtWidgets.QListWidget(self)
+        self._list.setMaximumHeight(150)
+        self._list.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+        # --- Layout ---
+        headerLabel = QtWidgets.QLabel(translate("filebrowser", "Stash"))
+        headerLabel.setStyleSheet(
+            "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
+        )
+        headerLayout = QtWidgets.QHBoxLayout()
+        headerLayout.setContentsMargins(0, 0, 0, 0)
+        headerLayout.addWidget(headerLabel)
+        headerLayout.addStretch()
+        headerLayout.addWidget(self._pushButton)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 0)
+        layout.setSpacing(2)
+        layout.addLayout(headerLayout)
+        layout.addWidget(self._list)
+        self.setLayout(layout)
+
+        self.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def updateForPath(self, path):
+        """Show/refresh the stash panel for the git repo containing *path*."""
+        root = githelper.get_git_root(path)
+        self._repo_root = root
+        if root:
+            self._refreshList()
+            self.setVisible(True)
+        else:
+            self._list.clear()
+            self.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _refreshList(self):
+        """Repopulate the stash list from ``git stash list``."""
+        self._list.clear()
+        if not self._repo_root:
+            return
+        for ref, message in githelper.get_stash_list(self._repo_root):
+            self._addEntry(ref, message)
+
+    def _addEntry(self, ref, message):
+        """Append one stash row (label + Apply/Pop/Drop buttons)."""
+        item = QtWidgets.QListWidgetItem()
+        self._list.addItem(item)
+
+        row = QtWidgets.QWidget()
+        rowLayout = QtWidgets.QHBoxLayout(row)
+        rowLayout.setContentsMargins(2, 1, 2, 1)
+        rowLayout.setSpacing(2)
+
+        label = QtWidgets.QLabel(message)
+        label.setToolTip(ref)
+        label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        rowLayout.addWidget(label)
+
+        for text, slot in [
+            (translate("filebrowser", "Apply"), self._onApply),
+            (translate("filebrowser", "Pop"), self._onPop),
+            (translate("filebrowser", "Drop"), self._onDrop),
+        ]:
+            btn = QtWidgets.QPushButton(text)
+            btn.setProperty("stashRef", ref)
+            btn.clicked.connect(slot)
+            rowLayout.addWidget(btn)
+
+        item.setSizeHint(row.sizeHint())
+        self._list.setItemWidget(item, row)
+
+    # ------------------------------------------------------------------
+    # Button callbacks
+    # ------------------------------------------------------------------
+
+    def _onApply(self):
+        """Apply the selected stash entry without removing it from the list."""
+        ref = self.sender().property("stashRef")
+        if ref and self._repo_root:
+            ok, out = githelper.run_stash_command(self._repo_root, ["apply", ref])
+            if not ok:
+                QtWidgets.QMessageBox.warning(
+                    self, translate("filebrowser", "Stash Apply"), out
+                )
+            self._afterOperation()
+
+    def _onPop(self):
+        """Apply the selected stash entry and remove it from the list."""
+        ref = self.sender().property("stashRef")
+        if ref and self._repo_root:
+            ok, out = githelper.run_stash_command(self._repo_root, ["pop", ref])
+            if not ok:
+                QtWidgets.QMessageBox.warning(
+                    self, translate("filebrowser", "Stash Pop"), out
+                )
+            self._afterOperation()
+
+    def _onDrop(self):
+        """Drop (delete) the selected stash entry after confirmation."""
+        ref = self.sender().property("stashRef")
+        if ref and self._repo_root:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                translate("filebrowser", "Drop Stash"),
+                translate("filebrowser", "Drop {}?").format(ref),
+            )
+            if answer == QtWidgets.QMessageBox.StandardButton.Yes:
+                ok, out = githelper.run_stash_command(
+                    self._repo_root, ["drop", ref]
+                )
+                if not ok:
+                    QtWidgets.QMessageBox.warning(
+                        self, translate("filebrowser", "Stash Drop"), out
+                    )
+                self._afterOperation()
+
+    def _onStashChanges(self):
+        """Push current working-tree changes onto the stash."""
+        if not self._repo_root:
+            return
+        message, ok = QtWidgets.QInputDialog.getText(
+            self,
+            translate("filebrowser", "Stash Changes"),
+            translate("filebrowser", "Optional message (leave blank for default):"),
+        )
+        if ok:
+            args = ["push"]
+            if message.strip():
+                args += ["-m", message.strip()]
+            ok2, out = githelper.run_stash_command(self._repo_root, args)
+            if not ok2:
+                QtWidgets.QMessageBox.warning(
+                    self, translate("filebrowser", "Stash Changes"), out
+                )
+            self._afterOperation()
+
+    def _afterOperation(self):
+        """Refresh the stash list and ask the file browser to update.
+
+        The refresh is unconditional: even when a command fails the working
+        tree may have been partially modified (e.g. a conflicted apply), so
+        keeping the UI in sync is always the right thing to do.
+        """
+        self._refreshList()
+        self.refreshRequested.emit()
+
+
 class Browser(QtWidgets.QWidget):
     """A browser consists of an address bar, and tree view, and other
     widgets to help browse the file system. The browser object is responsible
