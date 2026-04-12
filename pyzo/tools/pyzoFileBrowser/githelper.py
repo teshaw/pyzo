@@ -3,14 +3,15 @@ Git helper utilities for the pyzo file browser.
 
 Provides lightweight, dependency-free git integration using only the
 Python standard library.  subprocess is used only for `git status` and
-background fetch operations.
+`git show`.
+`git diff`.
 """
 
 import os
 import os.path as op
+import re
 import subprocess
-import threading
-import time
+from dataclasses import dataclass
 
 
 # ---------------------------------------------------------------------------
@@ -174,164 +175,165 @@ def get_git_status(repo_root):
 
 
 # ---------------------------------------------------------------------------
-# subprocess-based git fetch and ahead/behind
+# subprocess-based git show (blob retrieval)
 # ---------------------------------------------------------------------------
 
 
-def git_fetch(repo_root):
-    """Run ``git fetch --quiet`` for *repo_root*.
+def get_file_blob(repo_root, relpath, ref="HEAD"):
+    """Return the committed content of *relpath* at *ref* as a string.
 
-    Returns ``True`` on success, ``False`` on failure.  Times out after
-    30 seconds so it never blocks indefinitely.
+    Runs ``git show <ref>:<relpath>`` inside *repo_root*.
+
+    Parameters
+    ----------
+    repo_root : str
+        Absolute path to the repository root (as returned by
+        :func:`get_git_root`).
+    relpath : str
+        Path of the file relative to *repo_root*.  Windows backslashes
+        are converted to forward slashes automatically.
+    ref : str
+        Any git revision accepted by ``git show`` (branch name, tag,
+        commit SHA, …).  Defaults to ``'HEAD'``.
+
+    Returns
+    -------
+    str or None
+        Decoded file content, or ``None`` when the ref or path does not
+        exist (or on any other git/subprocess error).
     """
+    # Git always uses forward slashes in object paths, even on Windows.
+    relpath = relpath.replace("\\", "/")
     try:
         result = subprocess.run(
-            ["git", "fetch", "--quiet"],
-            cwd=repo_root,
-            capture_output=True,
-            timeout=30,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def get_ahead_behind(repo_root):
-    """Return ``(ahead, behind)`` counts vs the upstream branch.
-
-    Runs ``git rev-list --count @{u}..HEAD`` (ahead) and
-    ``git rev-list --count HEAD..@{u}`` (behind).
-    Returns ``(0, 0)`` when there is no upstream or on any error.
-    """
-    try:
-        ahead_result = subprocess.run(
-            ["git", "rev-list", "--count", "@{u}..HEAD"],
-            cwd=repo_root,
-            capture_output=True,
-            timeout=5,
-        )
-        behind_result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..@{u}"],
-            cwd=repo_root,
-            capture_output=True,
-            timeout=5,
-        )
-        if ahead_result.returncode != 0 or behind_result.returncode != 0:
-            return (0, 0)
-        ahead = int(ahead_result.stdout.strip())
-        behind = int(behind_result.stdout.strip())
-        return (ahead, behind)
-    except Exception:
-        return (0, 0)
-
-
-def get_upstream_branch(repo_root):
-    """Return the upstream tracking branch name for HEAD, or ``None``.
-
-    Uses ``git rev-parse --abbrev-ref --symbolic-full-name @{u}``.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            ["git", "show", f"{ref}:{relpath}"],
             cwd=repo_root,
             capture_output=True,
             timeout=5,
         )
         if result.returncode != 0:
             return None
-        return result.stdout.decode("utf-8", errors="surrogateescape").strip()
+        return result.stdout.decode("utf-8", errors="replace")
     except Exception:
         return None
-
-
-# ---------------------------------------------------------------------------
-# Background fetch worker
+# Hunk - structured diff hunk data for the diff gutter
 # ---------------------------------------------------------------------------
 
 
-class GitFetchWorker(threading.Thread):
-    """Background thread that periodically fetches from the remote and
-    reports ahead/behind commit counts to the UI via a callback.
+@dataclass
+class Hunk:
+    """Represents a single diff hunk from ``git diff`` output.
+
+    Attributes
+    ----------
+    old_start : int
+        Starting line number in the old (a) version.
+    old_count : int
+        Number of lines in the old (a) version.
+    new_start : int
+        Starting line number in the new (b) version.
+    new_count : int
+        Number of lines in the new (b) version.
+    """
+
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+
+
+# Compiled regex for the ``@@ -a,b +c,d @@`` hunk header.
+# The count fields (,b and ,d) are optional; when absent they default to 1.
+_HUNK_RE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@",
+    re.MULTILINE,
+)
+
+
+def _parse_hunks(diff_output):
+    """Parse *diff_output* and return a list of :class:`Hunk` objects.
 
     Parameters
     ----------
-    callback : callable
-        Called with ``(ahead: int, behind: int, upstream: str | None)``
-        from the worker thread.  The caller is responsible for
-        marshalling the result to the main thread (e.g. via a Qt signal).
-    interval : float
-        Seconds between fetch runs (default 300 = 5 minutes).
+    diff_output : str
+        Raw output from ``git diff``.
+
+    Returns
+    -------
+    list[Hunk]
+        Parsed hunks, or an empty list for binary files or empty output.
     """
+    if "Binary files" in diff_output:
+        return []
+    hunks = []
+    for m in _HUNK_RE.finditer(diff_output):
+        old_start = int(m.group(1))
+        old_count = int(m.group(2)) if m.group(2) is not None else 1
+        new_start = int(m.group(3))
+        new_count = int(m.group(4)) if m.group(4) is not None else 1
+        hunks.append(
+            Hunk(
+                old_start=old_start,
+                old_count=old_count,
+                new_start=new_start,
+                new_count=new_count,
+            )
+        )
+    return hunks
 
-    def __init__(self, callback, interval=300):
-        super().__init__(name="GitFetchWorker", daemon=True)
-        self._callback = callback
-        self._interval = interval
-        self._repo_root = None
-        self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-        self._pause_event = threading.Event()
-        self._pause_event.set()  # not paused initially
-        # Trigger an immediate fetch when the repo root changes
-        self._trigger_event = threading.Event()
 
-    # ------------------------------------------------------------------
-    # Public API (safe to call from any thread)
-    # ------------------------------------------------------------------
+def get_hunk_diff(filepath):
+    """Return a list of :class:`Hunk` objects for *filepath*.
 
-    def set_repo(self, repo_root):
-        """Set the repository root and trigger an immediate fetch."""
-        with self._lock:
-            changed = repo_root != self._repo_root
-            self._repo_root = repo_root
-        if changed:
-            self._trigger_event.set()
+    Runs ``git diff HEAD -- <file>`` to obtain the diff of working-tree
+    changes against HEAD.  For files that are staged but have no
+    working-tree changes, falls back to ``git diff --cached -- <file>``
+    to capture staged-only hunks.
 
-    def pause(self):
-        """Pause periodic fetching (e.g. when the application loses focus)."""
-        self._pause_event.clear()
+    Parameters
+    ----------
+    filepath : str or pathlib.Path
+        Absolute or relative path to the file to diff.
 
-    def resume(self):
-        """Resume periodic fetching and trigger an immediate run."""
-        self._pause_event.set()
-        self._trigger_event.set()
+    Returns
+    -------
+    list[Hunk]
+        Parsed diff hunks.  An empty list is returned when:
 
-    def stop(self, timeout=2.0):
-        """Stop the worker thread."""
-        self._stop_event.set()
-        self._pause_event.set()   # unblock any wait
-        self._trigger_event.set()  # unblock any wait
-        self.join(timeout)
+        * ``git`` is not available or exits with a non-zero status,
+        * the file is not inside a git repository,
+        * the file is not tracked / has no changes,
+        * the file is binary.
 
-    # ------------------------------------------------------------------
-    # Thread body
-    # ------------------------------------------------------------------
+    Notes
+    -----
+    Designed to be called from a ``QThread`` worker so that it does not
+    block the Qt main thread.
+    """
+    filepath = str(filepath)
+    repo_root = get_git_root(filepath)
+    if repo_root is None:
+        return []
 
-    def run(self):
-        while not self._stop_event.is_set():
-            # Wait until not paused
-            self._pause_event.wait()
-            if self._stop_event.is_set():
-                break
+    def _run_diff(extra_args):
+        try:
+            result = subprocess.run(
+                ["git", "diff"] + extra_args + ["--", filepath],
+                cwd=repo_root,
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return ""
+            return result.stdout.decode("utf-8", errors="surrogateescape")
+        except Exception:
+            return ""
 
-            # Clear any pending trigger before fetching so we don't immediately
-            # re-enter the loop if a new trigger arrives during the fetch.
-            self._trigger_event.clear()
+    # First try working-tree diff against HEAD (covers staged + unstaged).
+    output = _run_diff(["HEAD"])
+    if output:
+        return _parse_hunks(output)
 
-            with self._lock:
-                repo = self._repo_root
-
-            if repo:
-                git_fetch(repo)
-                if not self._stop_event.is_set():
-                    ahead, behind = get_ahead_behind(repo)
-                    upstream = get_upstream_branch(repo)
-                    try:
-                        self._callback(ahead, behind, upstream)
-                    except Exception:
-                        pass
-
-            # Sleep for the configured interval, but wake early if
-            # triggered (repo changed) or stopped.
-            self._trigger_event.wait(timeout=self._interval)
-            self._trigger_event.clear()
+    # Fall back to staged-only diff for files that are fully staged.
+    output = _run_diff(["--cached"])
+    return _parse_hunks(output)
