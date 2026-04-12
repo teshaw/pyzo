@@ -236,6 +236,9 @@ def createEditor(parent, filename=None):
         # todo: rename style -> parser
         editor.setParser(pyzo.config.settings.defaultStyle)
 
+    # Initialise the diff gutter with the file path (may be empty for tmp files)
+    editor.setDiffGutterFilePath(editor._filename)
+
     # return
     return editor
 
@@ -702,6 +705,9 @@ class PyzoEditor(BaseTextCtrl):
         self._name = os.path.split(self._filename)[1]
         self.document().setModified(False)
         self._modifyTime = os.path.getmtime(self._filename)
+
+        # Update the diff gutter with the (possibly new) file path
+        self.setDiffGutterFilePath(self._filename)
 
         # update title (in case of a rename)
         self.setTitleInMainWindow()
