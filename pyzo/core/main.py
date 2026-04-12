@@ -222,6 +222,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if pyzo.config.state.newUser and not pyzo.config.state.loadedTools:
             pyzo.toolManager.loadTool("pyzosourcestructure")
             pyzo.toolManager.loadTool("pyzofilebrowser", "pyzosourcestructure")
+            pyzo.toolManager.loadTool("pyzogitpanel", "pyzofilebrowser")
         elif pyzo.config.state.loadedTools:
             self.restoreTools()
 
