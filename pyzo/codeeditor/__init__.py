@@ -56,6 +56,7 @@ class CodeEditor(
     ShowWhitespace,
     ShowLineEndings,
     Wrap,
+    DiffGutter,
     BreakPoints,
     DiffGutter,
     LineNumbers,
