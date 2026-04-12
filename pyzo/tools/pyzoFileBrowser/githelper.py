@@ -204,12 +204,14 @@ class GitFetchWorker:
     def _fetch_and_report(self, repo_root):
         """Run ``git fetch`` then compute and deliver ahead/behind counts."""
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["git", "fetch", "--quiet"],
                 cwd=repo_root,
                 capture_output=True,
                 timeout=30,
             )
+            if result.returncode != 0:
+                return
         except Exception:
             return
 
