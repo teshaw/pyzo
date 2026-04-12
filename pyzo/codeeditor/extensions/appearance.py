@@ -1688,7 +1688,7 @@ def _parse_hunks(unified_diff_lines):
 
 
 class DiffGutter:
-    """Extension that shows a narrow diff gutter next to the editor.
+    """Extension that shows a narrow diff-change indicator strip on the left gutter.
 
     A colored bar is drawn for each changed region compared to the file's
     git HEAD state:

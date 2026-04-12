@@ -706,7 +706,8 @@ class PyzoEditor(BaseTextCtrl):
         self.document().setModified(False)
         self._modifyTime = os.path.getmtime(self._filename)
 
-        # Update the diff gutter with the (possibly new) file path
+        # Refresh the diff gutter so it reflects the newly saved state
+        # (file is now on disk — synchronous recompute is acceptable).
         self.setDiffGutterFilePath(self._filename)
 
         # update title (in case of a rename)
@@ -736,6 +737,10 @@ class PyzoEditor(BaseTextCtrl):
         linenr = cursor.blockNumber() + 1
 
         self._loadTextFromFile(filename)
+
+        # Refresh the diff gutter — the file on disk is the new HEAD reference
+        # point so we recompute immediately.
+        self.setDiffGutterFilePath(filename)
 
         # Go where we were (approximately)
         self.gotoLine(linenr)
