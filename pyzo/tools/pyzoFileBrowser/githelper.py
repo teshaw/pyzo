@@ -11,6 +11,7 @@ import os
 import os.path as op
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
 
 from pyzo.qt import QtCore
@@ -110,6 +111,150 @@ def _parse_git_status(repo_root):
         return {"staged": staged, "unstaged": unstaged}
     except Exception:
         return {"staged": [], "unstaged": []}
+
+
+# ---------------------------------------------------------------------------
+# GitFetchWorker - periodic background git fetch with ahead/behind counting
+# ---------------------------------------------------------------------------
+
+
+class GitFetchWorker:
+    """Background worker that periodically runs ``git fetch`` and reports the
+    ahead/behind commit counts relative to the upstream tracking branch.
+
+    The worker runs on a plain :class:`threading.Thread` (not a QThread) so
+    that it does not need a Qt event loop.  Results are delivered by calling
+    *callback(ahead, behind, upstream)* from the worker thread; callers are
+    responsible for marshalling to the main thread (e.g. via a Qt signal).
+
+    Parameters
+    ----------
+    callback : callable
+        Called with ``(ahead: int, behind: int, upstream: str)`` after each
+        completed fetch cycle.  Invoked from the worker thread.
+    interval : int
+        Seconds between fetch cycles.  Defaults to ``300`` (5 minutes).
+    """
+
+    def __init__(self, callback, interval=300):
+        self._callback = callback
+        self._interval = interval
+        self._repo_root = None
+        self._stopped = False
+        self._paused = False
+        self._lock = threading.Lock()
+        self._event = threading.Event()  # woken on set_repo / resume / stop
+        self._thread = None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def start(self):
+        """Start the background fetch thread."""
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Stop the background fetch thread.  Safe to call multiple times."""
+        with self._lock:
+            self._stopped = True
+        self._event.set()
+
+    def pause(self):
+        """Pause periodic fetching (e.g. when the application loses focus)."""
+        with self._lock:
+            self._paused = True
+
+    def resume(self):
+        """Resume periodic fetching and trigger an immediate cycle."""
+        with self._lock:
+            self._paused = False
+        self._event.set()
+
+    def set_repo(self, repo_root):
+        """Switch to a new repository root (or ``None`` to disable fetching)."""
+        with self._lock:
+            self._repo_root = repo_root
+        self._event.set()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _run(self):
+        """Main loop executed on the worker thread."""
+        while True:
+            # Wait for the configured interval or an early wake-up signal.
+            self._event.wait(timeout=self._interval)
+            self._event.clear()
+
+            with self._lock:
+                if self._stopped:
+                    return
+                if self._paused:
+                    continue
+                repo_root = self._repo_root
+
+            if not repo_root:
+                continue
+
+            self._fetch_and_report(repo_root)
+
+    def _fetch_and_report(self, repo_root):
+        """Run ``git fetch`` then compute and deliver ahead/behind counts."""
+        try:
+            subprocess.run(
+                ["git", "fetch", "--quiet"],
+                cwd=repo_root,
+                capture_output=True,
+                timeout=30,
+            )
+        except Exception:
+            return
+
+        ahead, behind, upstream = self._get_ahead_behind(repo_root)
+        try:
+            self._callback(ahead, behind, upstream)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _get_ahead_behind(repo_root):
+        """Return ``(ahead, behind, upstream_name)`` for *repo_root*.
+
+        Uses ``git rev-list --count HEAD...@{upstream}`` to count commits.
+        Returns ``(0, 0, "")`` on any error or when there is no upstream.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "rev-list", "--count", "--left-right", "HEAD...@{upstream}"],
+                cwd=repo_root,
+                capture_output=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return 0, 0, ""
+            parts = result.stdout.decode().strip().split()
+            if len(parts) != 2:
+                return 0, 0, ""
+            ahead, behind = int(parts[0]), int(parts[1])
+        except Exception:
+            return 0, 0, ""
+
+        # Retrieve the upstream tracking branch name for tooltip display.
+        try:
+            name_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                cwd=repo_root,
+                capture_output=True,
+                timeout=5,
+            )
+            upstream = name_result.stdout.decode().strip() if name_result.returncode == 0 else ""
+        except Exception:
+            upstream = ""
+
+        return ahead, behind, upstream
 
 
 class _GitRefreshWorker(QtCore.QThread):
