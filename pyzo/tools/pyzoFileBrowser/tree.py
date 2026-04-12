@@ -943,6 +943,16 @@ class PopupMenu(pyzo.core.menu.Menu):
             self.addItem(translate("filebrowser", "Rename"), None, self.onRename)
             self.addItem(translate("filebrowser", "Delete"), None, self.onDelete)
 
+        # Git operations – only when the item resides inside a git repository
+        item_path = (
+            self._item.path() if isinstance(self._item, (FileItem, DirItem)) else self.parent().path()
+        )
+        if githelper.get_git_root(item_path):
+            self.addSeparator()
+            self.addItem(
+                translate("filebrowser", "Git commit\u2026"), None, self._gitCommit
+            )
+
     def _star(self):
         # Prepare
         browser = self.parent().parent()
@@ -953,6 +963,23 @@ class PopupMenu(pyzo.core.menu.Menu):
             browser.addStarredDir(path)
         # Refresh
         self.parent().setPath(self.parent().path())
+
+    def _gitCommit(self):
+        from .commit_widget import CommitWidget
+
+        tree = self.parent()
+        item_path = (
+            self._item.path()
+            if isinstance(self._item, (FileItem, DirItem))
+            else tree.path()
+        )
+        repo_root = githelper.get_git_root(item_path)
+        if repo_root is None:
+            return
+        owner, repo_name = githelper.get_github_remote(repo_root)
+        dlg = CommitWidget(tree, repo_root, owner, repo_name)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            tree.onChanged()  # refresh file status colours
 
     def _openOutsidePyzo(self):
         path = self._item.path()
