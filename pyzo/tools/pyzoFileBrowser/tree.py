@@ -741,7 +741,7 @@ class Tree(QtWidgets.QTreeWidget):
 
         Called after :func:`createItemsFun` so that all items are fully
         constructed and inserted into the tree before :meth:`setForeground`
-        is invoked.
+        is invoked.  Conflicted files additionally receive a ⚠ overlay icon.
         """
         if self._gitStatus is None:
             return
@@ -751,10 +751,29 @@ class Tree(QtWidgets.QTreeWidget):
         else:
             count = parent.childCount()
             get_item = parent.child
+
+        # Lazily build the conflict-overlay icon once per call.
+        _conflict_icon_cache = {}
+
+        def _conflict_overlay(base_icon):
+            key = id(base_icon)
+            if key not in _conflict_icon_cache:
+                warn_icon = QtWidgets.QApplication.style().standardIcon(
+                    QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
+                )
+                _conflict_icon_cache[key] = addIconOverlays(
+                    base_icon,
+                    warn_icon,
+                    offset=(8, 0),
+                    overlay_offset=(0, 0),
+                )
+            return _conflict_icon_cache[key]
+
         for i in range(count):
             item = get_item(i)
             if isinstance(item, DirItem):
                 color = self._gitStatus.get_dir_color(item.path())
+                xy = None
             elif isinstance(item, FileItem):
                 xy = self._gitStatus.file_status(item.path())
                 color = self._gitStatus.get_color_for_xy(xy)
@@ -764,6 +783,10 @@ class Tree(QtWidgets.QTreeWidget):
                 item.setForeground(0, QtGui.QBrush(QtGui.QColor(*color)))
             else:
                 item.setForeground(0, QtGui.QBrush())
+            # Add ⚠ overlay for unmerged (conflict) files
+            if xy is not None and self._gitStatus.is_conflict_xy(xy):
+                item.setIcon(0, _conflict_overlay(item.icon(0)))
+                item.setToolTip(0, "Merge conflict – resolve this file")
 
     def _refreshGitStatus(self):
         """Refresh the cached git status for the current path."""
