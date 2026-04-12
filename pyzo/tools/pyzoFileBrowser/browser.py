@@ -372,8 +372,8 @@ class Browser(QtWidgets.QWidget):
         self._fsProxy.stop()
         self._fetchWorker.stop()
 
-    def _updateGitLabel(self, path):
-        """Update the git branch label to reflect the repository at *path*."""
+    def _updateBranchCombo(self, path):
+        """Populate the branch combo box for the repository at *path*."""
         root = githelper.get_git_root(path)
         if root:
             branch = githelper.get_git_branch(root)

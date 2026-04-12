@@ -129,6 +129,14 @@ class GitStatus:
                     return color
         return None
 
+    def has_tracked_changes(self):
+        """Return ``True`` if any tracked file has staged or unstaged changes.
+
+        Untracked (``??``) and ignored (``!!``) entries are excluded so that
+        the presence of new, uncommitted files does not trigger the warning.
+        """
+        return any(xy not in ("??", "!!") for xy in self._status.values())
+
 
 # ---------------------------------------------------------------------------
 # Branch name validation and creation
