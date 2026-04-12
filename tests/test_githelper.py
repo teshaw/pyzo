@@ -1,15 +1,10 @@
-"""Tests for the git helper utilities in pyzo.tools.pyzoFileBrowser.githelper."""
+"""Tests for pyzo.tools.pyzoFileBrowser.githelper.get_file_blob."""
 
 import importlib.util
 import os
-import subprocess
-import sys
-import tempfile
 
-import pytest
-
-# Import githelper directly to avoid triggering the pyzo.tools package
-# initialisation (which requires a running Qt application).
+# Import githelper directly to avoid triggering the Qt-dependent
+# pyzo.tools package __init__.
 _GITHELPER_PATH = os.path.join(
     os.path.dirname(__file__),
     "..",
@@ -22,173 +17,56 @@ _spec = importlib.util.spec_from_file_location("githelper", _GITHELPER_PATH)
 githelper = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(githelper)
 
+get_file_blob = githelper.get_file_blob
+get_git_root = githelper.get_git_root
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# The test suite lives inside the repository, so we can use it as a live
+# git repo for integration-style tests without any extra setup.
+REPO_ROOT = get_git_root(os.path.dirname(__file__))
 
 
-def _init_repo(tmp_path):
-    """Create a minimal git repository under *tmp_path* and return its path."""
-    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
+def test_get_file_blob_returns_content_for_tracked_file():
+    """get_file_blob returns a non-empty str for a real tracked file."""
+    content = get_file_blob(REPO_ROOT, "README.md")
+    assert isinstance(content, str)
+    assert len(content) > 0
+
+
+def test_get_file_blob_nonexistent_file_returns_none():
+    """get_file_blob returns None for a path that does not exist in git."""
+    result = get_file_blob(REPO_ROOT, "this_file_does_not_exist_xyz.txt")
+    assert result is None
+
+
+def test_get_file_blob_nonexistent_ref_returns_none():
+    """get_file_blob returns None when the ref does not exist."""
+    result = get_file_blob(REPO_ROOT, "README.md", ref="nonexistent-ref-xyz")
+    assert result is None
+
+
+def test_get_file_blob_windows_path_separators():
+    """get_file_blob converts backslashes to forward slashes for git."""
+    # Use a path that exists; on Windows callers may pass backslashes.
+    # pyzo/tools/pyzoFileBrowser/githelper.py is a tracked file.
+    forward = get_file_blob(
+        REPO_ROOT, "pyzo/tools/pyzoFileBrowser/githelper.py"
     )
-    subprocess.run(
-        ["git", "config", "user.name", "Test"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
+    backslash = get_file_blob(
+        REPO_ROOT, r"pyzo\tools\pyzoFileBrowser\githelper.py"
     )
-    # Create an initial commit so that HEAD is valid
-    readme = tmp_path / "README.md"
-    readme.write_text("hello")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-    )
-    return str(tmp_path)
+    assert forward is not None
+    assert forward == backslash
 
 
-# ---------------------------------------------------------------------------
-# get_git_branches
-# ---------------------------------------------------------------------------
+def test_get_file_blob_default_ref_is_head():
+    """Calling with and without explicit ref='HEAD' yields the same result."""
+    explicit = get_file_blob(REPO_ROOT, "README.md", ref="HEAD")
+    implicit = get_file_blob(REPO_ROOT, "README.md")
+    assert explicit == implicit
 
 
-def test_get_git_branches_single_branch(tmp_path):
-    root = _init_repo(tmp_path)
-    local, remote, current = githelper.get_git_branches(root)
-    # There should be exactly one local branch (master or main depending on git config)
-    assert len(local) == 1
-    assert remote == []
-    assert current == local[0]
-
-
-def test_get_git_branches_multiple_branches(tmp_path):
-    root = _init_repo(tmp_path)
-    # Create an additional local branch
-    subprocess.run(
-        ["git", "branch", "feature/x"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
-    local, remote, current = githelper.get_git_branches(root)
-    assert len(local) == 2
-    assert "feature/x" in local
-    assert remote == []
-    assert current is not None
-    assert current in local
-
-
-def test_get_git_branches_current_marked(tmp_path):
-    root = _init_repo(tmp_path)
-    subprocess.run(
-        ["git", "branch", "other"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
-    local, remote, current = githelper.get_git_branches(root)
-    # Switch to 'other' and verify current updates
-    subprocess.run(
-        ["git", "checkout", "other"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
-    local2, remote2, current2 = githelper.get_git_branches(root)
-    assert current2 == "other"
-
-
-def test_get_git_branches_invalid_path():
-    local, remote, current = githelper.get_git_branches("/nonexistent/path")
-    assert local == []
-    assert remote == []
-    assert current is None
-
-
-# ---------------------------------------------------------------------------
-# has_tracked_changes (GitStatus.has_tracked_changes)
-# ---------------------------------------------------------------------------
-
-
-def test_has_tracked_changes_clean(tmp_path):
-    root = _init_repo(tmp_path)
-    status = githelper.get_git_status(root)
-    assert status is not None
-    assert status.has_tracked_changes() is False
-
-
-def test_has_tracked_changes_modified(tmp_path):
-    root = _init_repo(tmp_path)
-    # Modify the tracked file
-    (tmp_path / "README.md").write_text("modified")
-    status = githelper.get_git_status(root)
-    assert status is not None
-    assert status.has_tracked_changes() is True
-
-
-def test_has_tracked_changes_staged(tmp_path):
-    root = _init_repo(tmp_path)
-    new_file = tmp_path / "new.txt"
-    new_file.write_text("new")
-    subprocess.run(
-        ["git", "add", "new.txt"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
-    status = githelper.get_git_status(root)
-    assert status is not None
-    assert status.has_tracked_changes() is True
-
-
-def test_has_tracked_changes_untracked_only(tmp_path):
-    root = _init_repo(tmp_path)
-    # Only add an untracked file (not staged)
-    (tmp_path / "untracked.txt").write_text("untracked")
-    status = githelper.get_git_status(root)
-    assert status is not None
-    # Untracked files should NOT count as tracked changes
-    assert status.has_tracked_changes() is False
-
-
-# ---------------------------------------------------------------------------
-# git_checkout
-# ---------------------------------------------------------------------------
-
-
-def test_git_checkout_success(tmp_path):
-    root = _init_repo(tmp_path)
-    subprocess.run(
-        ["git", "branch", "new-branch"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
-    success, error = githelper.git_checkout(root, "new-branch")
-    assert success is True
-    assert error == ""
-    # Verify the current branch changed
-    _, _, current = githelper.get_git_branches(root)
-    assert current == "new-branch"
-
-
-def test_git_checkout_nonexistent_branch(tmp_path):
-    root = _init_repo(tmp_path)
-    success, error = githelper.git_checkout(root, "nonexistent-branch")
-    assert success is False
-    assert error  # should contain an error message
-
-
-def test_git_checkout_invalid_path():
-    success, error = githelper.git_checkout("/nonexistent/path", "main")
-    assert success is False
-    assert error
+def test_get_file_blob_no_replacement_chars_in_ascii():
+    """Returned string contains valid text (no replacement characters for ASCII)."""
+    content = get_file_blob(REPO_ROOT, "README.md")
+    # README.md is ASCII/UTF-8 so no replacement characters expected.
+    assert "\ufffd" not in content

@@ -593,6 +593,14 @@ class FileMenu(Menu):
             icons.folder_page,
             pyzo.editors.openFile,
         )
+        self.addItem(
+            translate(
+                "menu",
+                "Clone repository... ::: Clone a remote git repository into a local folder.",
+            ),
+            None,
+            self._cloneRepository,
+        )
         #
         self._items += [
             self.addItem(
@@ -706,6 +714,12 @@ class FileMenu(Menu):
 
     def _pdfExport(self):
         dialog = PdfExport()
+        dialog.exec()
+
+    def _cloneRepository(self):
+        from pyzo.core.cloneDialog import CloneDialog
+
+        dialog = CloneDialog(self)
         dialog.exec()
 
 
