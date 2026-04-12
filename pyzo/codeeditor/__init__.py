@@ -39,6 +39,7 @@ from .extensions.behaviour import (
 )
 from .extensions.autocompletion import AutoCompletion
 from .extensions.calltip import Calltip
+from .extensions.diffgutter import DiffGutter
 
 
 # Order of superclasses: first the extensions, then CodeEditorBase
@@ -55,9 +56,11 @@ class CodeEditor(
     ShowWhitespace,
     ShowLineEndings,
     Wrap,
+    DiffGutter,
     BreakPoints,
     DiffGutter,
     LineNumbers,
+    DiffGutter,
     AutoCompletion,  # Escape: first remove autocompletion,
     Calltip,  # then calltip
     Indentation,

@@ -236,9 +236,7 @@ def createEditor(parent, filename=None):
         # todo: rename style -> parser
         editor.setParser(pyzo.config.settings.defaultStyle)
 
-    # Initialise the diff gutter with the file path (empty for unsaved files).
-    # This triggers an immediate diff recompute so the gutter is up-to-date on
-    # first open.
+    # Initialise the diff gutter with the file path (may be empty for tmp files)
     editor.setDiffGutterFilePath(editor._filename)
 
     # return

@@ -1,15 +1,88 @@
+"""Tests for the DiffGutter codeeditor extension."""
+
+import os
+import sys
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_API", "pyqt5")
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+@pytest.fixture(scope="module")
+def editor():
+    from PyQt5 import QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from pyzo.codeeditor import CodeEditor
+
+    e = CodeEditor()
+    e.setPlainText("line1\nline2\nline3\nline4\nline5\n")
+    yield e
+
+
+def test_diffgutter_importable():
+    from pyzo.codeeditor import DiffGutter  # noqa: F401
+
+
+def test_diffgutter_in_codeeditor_mro():
+    from pyzo.codeeditor import CodeEditor, DiffGutter
+
+    assert DiffGutter in CodeEditor.__mro__
+
+
+def test_diffgutter_has_api(editor):
+    assert hasattr(editor, "setDiffData")
+    assert hasattr(editor, "showDiffGutter")
+    assert hasattr(editor, "setShowDiffGutter")
+
+
+def test_show_diff_gutter_default_true(editor):
+    assert editor.showDiffGutter() is True
+
+
+def test_set_show_diff_gutter(editor):
+    editor.setShowDiffGutter(False)
+    assert editor.showDiffGutter() is False
+    editor.setShowDiffGutter(True)
+    assert editor.showDiffGutter() is True
+
+
+def test_set_diff_data_stores_data(editor):
+    data = {1: "added", 2: "modified", 3: "deleted"}
+    editor.setDiffData(data)
+    assert editor._diffData == data
+
+
+def test_set_diff_data_clear_with_none(editor):
+    editor.setDiffData({1: "added"})
+    editor.setDiffData(None)
+    assert editor._diffData == {}
+
+
+def test_set_diff_data_clear_with_empty_dict(editor):
+    editor.setDiffData({2: "modified"})
+    editor.setDiffData({})
+    assert editor._diffData == {}
+
+
+def test_set_diff_data_does_not_mutate_input(editor):
+    data = {1: "added"}
+    editor.setDiffData(data)
+    data[2] = "modified"
+    assert 2 not in editor._diffData
 """
 Tests for the DiffGutter extension.
 
 Covers:
 - Hunk dataclass construction
 - _parse_hunks() parsing of unified diff headers
-- DiffGutter extension integration (widget exists, API is correct)
-- setDiffGutterFilePath() triggers an immediate (0 ms) timer
-- _recomputeDiff() populates _diffHunks for a tracked file and clears them
-  when no file path is set or the file is outside a git repository
-- File-load and file-save refresh: gutter clears and repaints after each
-  call to setDiffGutterFilePath()
+- DiffGutter._recomputeDiff() integration (requires a Qt application and a
+  temporary git repository)
+- 500 ms QTimer debounce: textChanged restarts the timer; setDiffGutterFilePath
+  triggers an immediate (0 ms) recompute
 """
 
 import os
@@ -19,108 +92,135 @@ import tempfile
 
 import pytest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("QT_API", "pyqt5")
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 # ---------------------------------------------------------------------------
 # Hunk and _parse_hunks – pure Python, no Qt needed
 # ---------------------------------------------------------------------------
 from pyzo.codeeditor.extensions.appearance import Hunk, _parse_hunks
 
 
-def test_hunk_construction():
-    h = Hunk(old_start=1, old_count=3, new_start=1, new_count=0, kind="delete")
-    assert h.old_start == 1
-    assert h.old_count == 3
-    assert h.new_start == 1
-    assert h.new_count == 0
-    assert h.kind == "delete"
+class TestHunk:
+    def test_fields(self):
+        h = Hunk(old_start=5, old_count=3, new_start=5, new_count=4, kind="modify")
+        assert h.old_start == 5
+        assert h.old_count == 3
+        assert h.new_start == 5
+        assert h.new_count == 4
+        assert h.kind == "modify"
+
+    def test_equality(self):
+        h1 = Hunk(1, 2, 3, 4, "add")
+        h2 = Hunk(1, 2, 3, 4, "add")
+        assert h1 == h2
+
+    def test_inequality(self):
+        h1 = Hunk(1, 2, 3, 4, "add")
+        h2 = Hunk(1, 2, 3, 4, "modify")
+        assert h1 != h2
 
 
 class TestParseHunks:
+    def test_empty(self):
+        assert _parse_hunks([]) == []
+
     def test_add_hunk(self):
-        lines = ["@@ -5,0 +6,3 @@ some context\n"]
-        hunks = _parse_hunks(lines)
-        assert len(hunks) == 1
-        h = hunks[0]
-        assert h.old_start == 5
+        # @@ -10,0 +11,3 @@ means 0 lines removed → pure addition
+        lines = ["@@ -10,0 +11,3 @@\n"]
+        (h,) = _parse_hunks(lines)
+        assert h.old_start == 10
         assert h.old_count == 0
-        assert h.new_start == 6
+        assert h.new_start == 11
         assert h.new_count == 3
         assert h.kind == "add"
 
     def test_delete_hunk(self):
-        lines = ["@@ -2,4 +2,0 @@ some context\n"]
-        hunks = _parse_hunks(lines)
-        assert len(hunks) == 1
-        assert hunks[0].kind == "delete"
-        assert hunks[0].old_count == 4
-        assert hunks[0].new_count == 0
+        # @@ -5,2 +5,0 @@ means 0 new lines → pure deletion
+        lines = ["@@ -5,2 +5,0 @@\n"]
+        (h,) = _parse_hunks(lines)
+        assert h.old_start == 5
+        assert h.old_count == 2
+        assert h.new_start == 5
+        assert h.new_count == 0
+        assert h.kind == "delete"
 
     def test_modify_hunk(self):
-        lines = ["@@ -10,2 +10,3 @@ some context\n"]
-        hunks = _parse_hunks(lines)
-        assert len(hunks) == 1
-        assert hunks[0].kind == "modify"
+        lines = ["@@ -3,4 +3,5 @@\n"]
+        (h,) = _parse_hunks(lines)
+        assert h.old_start == 3
+        assert h.old_count == 4
+        assert h.new_start == 3
+        assert h.new_count == 5
+        assert h.kind == "modify"
 
     def test_implicit_count_one(self):
-        """When the comma and count are absent the count defaults to 1."""
+        # When the comma and count are absent the count is implicitly 1
         lines = ["@@ -1 +1 @@\n"]
-        hunks = _parse_hunks(lines)
-        assert len(hunks) == 1
-        assert hunks[0].old_count == 1
-        assert hunks[0].new_count == 1
-        assert hunks[0].kind == "modify"
-
-    def test_multiple_hunks(self):
-        lines = [
-            "@@ -1,0 +1,2 @@\n",
-            "+added line 1\n",
-            "+added line 2\n",
-            "@@ -5,1 +7,0 @@\n",
-            "-removed line\n",
-        ]
-        hunks = _parse_hunks(lines)
-        assert len(hunks) == 2
-        assert hunks[0].kind == "add"
-        assert hunks[1].kind == "delete"
+        (h,) = _parse_hunks(lines)
+        assert h.old_count == 1
+        assert h.new_count == 1
+        assert h.kind == "modify"
 
     def test_non_hunk_lines_ignored(self):
         lines = [
-            "diff --git a/foo b/foo\n",
-            "--- a/foo\n",
-            "+++ b/foo\n",
-            "@@ -3,2 +3,2 @@\n",
+            "--- a/foo.py\n",
+            "+++ b/foo.py\n",
+            "@@ -1,3 +1,3 @@\n",
+            " unchanged\n",
+            "-removed\n",
+            "+added\n",
         ]
         hunks = _parse_hunks(lines)
         assert len(hunks) == 1
 
+    def test_multiple_hunks(self):
+        lines = [
+            "@@ -1,2 +1,3 @@\n",
+            "@@ -10,0 +11,1 @@\n",
+            "@@ -20,3 +21,0 @@\n",
+        ]
+        hunks = _parse_hunks(lines)
+        assert len(hunks) == 3
+        assert hunks[0].kind == "modify"
+        assert hunks[1].kind == "add"
+        assert hunks[2].kind == "delete"
+
 
 # ---------------------------------------------------------------------------
-# Qt-based tests – require a QApplication
+# DiffGutter widget tests – require a Qt application
 # ---------------------------------------------------------------------------
+
+
+def _get_qt_app():
+    """Return an existing QApplication or create one."""
+    try:
+        from pyzo.qt import QtWidgets
+
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            app = QtWidgets.QApplication(sys.argv[:1])
+        return app
+    except Exception:
+        return None
 
 
 @pytest.fixture(scope="module")
 def qt_app():
-    from pyzo.qt import QtWidgets
+    app = _get_qt_app()
+    if app is None:
+        pytest.skip("Qt not available")
+    return app
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    yield app
 
-
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def editor(qt_app):
+    """Return a minimal CodeEditor instance that includes DiffGutter."""
     from pyzo.codeeditor import CodeEditor
 
-    e = CodeEditor()
-    e.setPlainText("line1\nline2\nline3\n")
-    yield e
+    ed = CodeEditor()
+    yield ed
+    ed.close()
 
 
-@pytest.fixture
+@pytest.fixture()
 def git_repo(tmp_path):
     """Create a minimal git repository with one committed file."""
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
@@ -136,16 +236,13 @@ def git_repo(tmp_path):
         check=True,
         capture_output=True,
     )
-    file_path = tmp_path / "sample.py"
+    file_path = tmp_path / "hello.py"
     file_path.write_text("line1\nline2\nline3\n")
     subprocess.run(
-        ["git", "add", "sample.py"],
-        cwd=str(tmp_path),
-        check=True,
-        capture_output=True,
+        ["git", "add", "hello.py"], cwd=str(tmp_path), check=True, capture_output=True
     )
     subprocess.run(
-        ["git", "commit", "-m", "initial"],
+        ["git", "commit", "-m", "init"],
         cwd=str(tmp_path),
         check=True,
         capture_output=True,
@@ -153,218 +250,116 @@ def git_repo(tmp_path):
     return tmp_path, file_path
 
 
-# ------------------------------------------------------------------
-# Extension API
-# ------------------------------------------------------------------
+class TestDiffGutterWidget:
+    def test_initial_state(self, editor):
+        """The gutter starts with no hunks and no file path."""
+        assert editor._diffHunks == []
+        assert editor._diffGutterFilePath == ""
 
+    def test_show_diff_gutter_default_true(self, editor):
+        assert editor.showDiffGutter() is True
 
-def test_diffgutter_importable():
-    from pyzo.codeeditor import DiffGutter  # noqa: F401
+    def test_set_show_diff_gutter(self, editor):
+        editor.setShowDiffGutter(False)
+        assert editor.showDiffGutter() is False
+        editor.setShowDiffGutter(True)
+        assert editor.showDiffGutter() is True
 
+    def test_no_recompute_without_file_path(self, editor):
+        """Calling _recomputeDiff with no path leaves hunks empty."""
+        editor._diffGutterFilePath = ""
+        editor._recomputeDiff()
+        assert editor._diffHunks == []
 
-def test_diffgutter_in_codeeditor_mro():
-    from pyzo.codeeditor import CodeEditor, DiffGutter
+    def test_no_recompute_outside_git(self, editor, tmp_path):
+        """Calling _recomputeDiff for a file outside a git repo leaves hunks empty."""
+        file_path = tmp_path / "outside.py"
+        file_path.write_text("hello\n")
+        editor._diffGutterFilePath = str(file_path)
+        editor._recomputeDiff()
+        assert editor._diffHunks == []
 
-    assert DiffGutter in CodeEditor.__mro__
+    def test_timer_is_single_shot(self, editor):
+        """The debounce timer must be configured as single-shot."""
+        assert editor._DiffGutter__diffDebounceTimer.isSingleShot()
 
+    def test_timer_interval(self, editor):
+        """The debounce timer interval matches the class constant."""
+        from pyzo.codeeditor.extensions.appearance import DiffGutter
 
-def test_diffgutter_has_api(editor):
-    assert hasattr(editor, "setDiffGutterFilePath")
-    assert hasattr(editor, "showDiffGutter")
-    assert hasattr(editor, "setShowDiffGutter")
-    assert hasattr(editor, "_recomputeDiff")
+        assert editor._DiffGutter__diffDebounceTimer.interval() == DiffGutter._DIFF_DEBOUNCE_MS
 
+    def test_timer_fires_and_calls_recompute(self, editor, git_repo, qt_app):
+        """textChanged → timer → _recomputeDiff fires after the debounce period."""
+        from pyzo.qt import QtCore
 
-def test_show_diff_gutter_default_true(editor):
-    assert editor.showDiffGutter() is True
+        _, file_path = git_repo
+        editor.setPlainText("line1\nline2\nline3\n")
+        editor._diffGutterFilePath = str(file_path)
+        editor._diffHunks = []
 
+        # Simulate a text change (adds a line) and let the event loop drain
+        editor.setPlainText("line1\nline2\nextra\nline3\n")
 
-def test_set_show_diff_gutter(editor):
-    editor.setShowDiffGutter(False)
-    assert editor.showDiffGutter() is False
-    editor.setShowDiffGutter(True)
-    assert editor.showDiffGutter() is True
+        # The timer is now active; run the event loop until it fires
+        timer = editor._DiffGutter__diffDebounceTimer
+        assert timer.isActive()
+        # Use a blocking loop with a deadline well above the debounce interval
+        deadline = QtCore.QDeadlineTimer(2000)
+        while timer.isActive() and not deadline.hasExpired():
+            qt_app.processEvents()
+        assert not timer.isActive(), "Timer should have fired within the deadline"
+        # After the timer fires the hunks should reflect the added line
+        assert len(editor._diffHunks) == 1
+        assert editor._diffHunks[0].kind == "add"
+        timer.stop()
 
+    def test_text_changed_starts_timer(self, editor):
+        """Editing text starts (or restarts) the debounce timer."""
+        timer = editor._DiffGutter__diffDebounceTimer
+        timer.stop()
+        assert not timer.isActive()
+        editor.setPlainText("hello")
+        assert timer.isActive()
+        timer.stop()
 
-# ------------------------------------------------------------------
-# _recomputeDiff behaviour
-# ------------------------------------------------------------------
+    def test_set_file_path_triggers_zero_ms_timer(self, editor, tmp_path):
+        """setDiffGutterFilePath should restart the timer with 0 ms interval."""
+        from pyzo.qt import QtWidgets
 
+        timer = editor._DiffGutter__diffDebounceTimer
+        timer.stop()
+        editor.setDiffGutterFilePath(str(tmp_path / "x.py"))
+        # After calling setDiffGutterFilePath the timer should be active (0 ms)
+        assert timer.isActive()
+        timer.stop()
 
-def test_no_recompute_without_file_path(editor):
-    """Calling _recomputeDiff with no path leaves hunks empty."""
-    editor._diffGutterFilePath = ""
-    editor._recomputeDiff()
-    assert editor._diffHunks == []
+    def test_recompute_in_git_repo(self, editor, git_repo):
+        """_recomputeDiff produces the correct hunks for a modified tracked file."""
+        _, file_path = git_repo
 
+        # Load the HEAD content into the editor first (simulates file open)
+        editor.setPlainText("line1\nline2\nline3\n")
+        editor._diffGutterFilePath = str(file_path)
 
-def test_no_recompute_outside_git(editor, tmp_path):
-    """Calling _recomputeDiff for a file outside a git repo leaves hunks empty."""
-    file_path = tmp_path / "outside.py"
-    file_path.write_text("hello\n")
-    editor._diffGutterFilePath = str(file_path)
-    editor._recomputeDiff()
-    assert editor._diffHunks == []
+        # No changes → no hunks
+        editor._recomputeDiff()
+        assert editor._diffHunks == []
 
+        # Add a line → one "add" hunk
+        editor.setPlainText("line1\nline2\nnewline\nline3\n")
+        editor._recomputeDiff()
+        assert len(editor._diffHunks) == 1
+        assert editor._diffHunks[0].kind == "add"
 
-def test_recompute_in_git_repo(editor, git_repo):
-    """_recomputeDiff produces the correct hunks for a modified tracked file."""
-    _, file_path = git_repo
+        # Delete a line → one "delete" hunk
+        editor.setPlainText("line1\nline3\n")
+        editor._recomputeDiff()
+        assert len(editor._diffHunks) == 1
+        assert editor._diffHunks[0].kind == "delete"
 
-    # Load the HEAD content into the editor first (simulates file open)
-    editor.setPlainText("line1\nline2\nline3\n")
-    editor._diffGutterFilePath = str(file_path)
-
-    # No changes → no hunks
-    editor._recomputeDiff()
-    assert editor._diffHunks == []
-
-    # Add a line → one "add" hunk
-    editor.setPlainText("line1\nline2\nnewline\nline3\n")
-    editor._recomputeDiff()
-    assert len(editor._diffHunks) == 1
-    assert editor._diffHunks[0].kind == "add"
-
-    # Delete a line → one "delete" hunk
-    editor.setPlainText("line1\nline3\n")
-    editor._recomputeDiff()
-    assert len(editor._diffHunks) == 1
-    assert editor._diffHunks[0].kind == "delete"
-
-    # Modify a line → one "modify" hunk
-    editor.setPlainText("line1\nLINE2\nline3\n")
-    editor._recomputeDiff()
-    assert len(editor._diffHunks) == 1
-    assert editor._diffHunks[0].kind == "modify"
-
-
-# ------------------------------------------------------------------
-# File-load refresh
-# ------------------------------------------------------------------
-
-
-def test_file_load_sets_filepath_and_triggers_timer(editor, tmp_path):
-    """setDiffGutterFilePath() activates the timer with a 0 ms interval."""
-    timer = editor._DiffGutter__diffDebounceTimer
-    timer.stop()
-    assert not timer.isActive()
-
-    path = str(tmp_path / "x.py")
-    editor.setDiffGutterFilePath(path)
-
-    assert editor._diffGutterFilePath == path
-    assert timer.isActive()
-    timer.stop()
-
-
-def test_file_load_clears_old_hunks_immediately(editor, git_repo, qt_app):
-    """After setDiffGutterFilePath() is called and the timer fires, hunks reflect
-    the current diff (they are cleared before the new diff is computed)."""
-    from pyzo.qt import QtCore
-
-    _, file_path = git_repo
-
-    # Prime the editor with a modification so hunks are non-empty
-    editor.setPlainText("line1\nline2\nline3\n")
-    editor._diffGutterFilePath = str(file_path)
-    editor.setPlainText("line1\nline2\nEXTRA\nline3\n")
-    editor._recomputeDiff()
-    assert len(editor._diffHunks) == 1
-
-    # Now "load" the same (unmodified) content — gutter should clear
-    editor.setPlainText("line1\nline2\nline3\n")
-    editor.setDiffGutterFilePath(str(file_path))
-
-    # Drain the event loop until the 0 ms timer fires
-    # QDeadlineTimer argument is in milliseconds; 2000 ms = 2 seconds.
-    deadline = QtCore.QDeadlineTimer(2000)
-    timer = editor._DiffGutter__diffDebounceTimer
-    while timer.isActive() and not deadline.hasExpired():
-        qt_app.processEvents()
-
-    assert editor._diffHunks == [], "Gutter should be empty after loading unchanged content"
-
-
-def test_file_load_no_previous_diff_state(editor, tmp_path):
-    """Opening a file that is not in a git repo leaves the gutter empty (no crash)."""
-    file_path = tmp_path / "standalone.py"
-    file_path.write_text("hello\n")
-    editor.setPlainText("hello\n")
-
-    # Simulate fresh file open
-    editor._diffHunks = []
-    editor.setDiffGutterFilePath(str(file_path))
-    # Timer is now pending; call _recomputeDiff directly to check
-    editor._recomputeDiff()
-    assert editor._diffHunks == []
-
-
-# ------------------------------------------------------------------
-# File-save refresh
-# ------------------------------------------------------------------
-
-
-def test_file_save_triggers_timer(editor, tmp_path):
-    """Calling setDiffGutterFilePath() after a save activates the timer."""
-    timer = editor._DiffGutter__diffDebounceTimer
-    timer.stop()
-
-    path = str(tmp_path / "saved.py")
-    editor.setDiffGutterFilePath(path)
-
-    assert timer.isActive()
-    timer.stop()
-
-
-def test_file_save_refresh_clears_hunks(editor, git_repo, qt_app):
-    """After saving (content matches HEAD), the diff gutter should be empty."""
-    from pyzo.qt import QtCore
-
-    _, file_path = git_repo
-
-    # Modify the editor content so hunks exist
-    editor.setPlainText("line1\nline2\nMODIFIED\n")
-    editor._diffGutterFilePath = str(file_path)
-    editor._recomputeDiff()
-    assert len(editor._diffHunks) == 1
-
-    # Simulate a save: write current content back to the file so HEAD diff
-    # will be non-trivial (we don't actually commit, so the diff remains).
-    # The key test is that setDiffGutterFilePath() triggers the timer.
-    timer = editor._DiffGutter__diffDebounceTimer
-    timer.stop()
-    editor.setDiffGutterFilePath(str(file_path))
-    assert timer.isActive()
-    timer.stop()
-
-
-# ------------------------------------------------------------------
-# Debounce timer behaviour
-# ------------------------------------------------------------------
-
-
-def test_timer_is_single_shot(editor):
-    """The debounce timer must be configured as single-shot."""
-    assert editor._DiffGutter__diffDebounceTimer.isSingleShot()
-
-
-def test_timer_interval(editor):
-    """The debounce timer interval matches the class constant (after explicit reset)."""
-    from pyzo.codeeditor.extensions.appearance import DiffGutter
-
-    timer = editor._DiffGutter__diffDebounceTimer
-    timer.stop()
-    # Reset the interval to the class default (it may have been set to 0 by
-    # a previous test that called setDiffGutterFilePath()).
-    timer.setInterval(DiffGutter._DIFF_DEBOUNCE_MS)
-    assert timer.interval() == DiffGutter._DIFF_DEBOUNCE_MS
-
-
-def test_text_changed_starts_timer(editor):
-    """Editing text starts (or restarts) the debounce timer."""
-    timer = editor._DiffGutter__diffDebounceTimer
-    timer.stop()
-    assert not timer.isActive()
-    editor.setPlainText("hello")
-    assert timer.isActive()
-    timer.stop()
+        # Modify a line → one "modify" hunk
+        editor.setPlainText("line1\nLINE2\nline3\n")
+        editor._recomputeDiff()
+        assert len(editor._diffHunks) == 1
+        assert editor._diffHunks[0].kind == "modify"

@@ -1384,6 +1384,189 @@ class BreakPoints:
         self.__breakPointArea.update(0, 0, w, self.height())
 
 
+class DiffGutter:
+    """Extension that shows a diff-change indicator strip on the left gutter.
+
+    Callers supply change data via ``setDiffData()``.  The gutter paints:
+
+    * a **green** filled bar for added lines
+    * an **amber** filled bar for modified lines
+    * a small **red** right-pointing triangle *between* lines for deleted
+      positions (since there is no actual line to render a full-height bar on)
+
+    All colours use semi-transparent RGBA values so they degrade gracefully on
+    both light and dark themes.
+    """
+
+    # Width of the gutter strip in pixels
+    _DiffGutterWidth = 4
+
+    # Register style element for the gutter background
+    _styleElements = [
+        (
+            "Editor.DiffGutter",
+            "The background colour of the diff-change gutter.",
+            "fore:#000,back:#DDD",
+        )
+    ]
+
+    class __DiffGutterArea(QtWidgets.QWidget):
+        """Widget responsible for drawing the diff gutter strip."""
+
+        def __init__(self, codeEditor):
+            super().__init__(codeEditor)
+
+        def paintEvent(self, event):
+            editor = self.parent()
+
+            if not editor.showDiffGutter():
+                return
+
+            w = editor._DiffGutterWidth
+            viewport = editor.viewport()
+
+            # Init painter
+            painter = QtGui.QPainter()
+            painter.begin(self)
+
+            # Paint the full gutter height
+            y1, y2 = 0, editor.height()
+
+            # Draw background using the registered style element
+            fmt = editor.getStyleElementFormat("editor.diffgutter")
+            painter.fillRect(QtCore.QRect(0, int(y1), int(w), int(y2)), fmt.back)
+
+            diffData = editor._diffData
+            if not diffData:
+                painter.end()
+                return
+
+            # Compute the mapping from viewport coords → gutter coords
+            tmp = self.mapToGlobal(QtCore.QPoint(0, 0))
+            offset = viewport.mapFromGlobal(tmp).y()
+
+            # Semi-transparent colours that work on both light and dark themes
+            added_color = QtGui.QColor(0, 180, 0, 180)
+            modified_color = QtGui.QColor(220, 140, 0, 200)
+            deleted_color = QtGui.QColor(210, 30, 30, 220)
+
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+
+            # Iterate only visible blocks
+            cursor = editor.cursorForPosition(QtCore.QPoint(0, int(y1)))
+
+            while True:
+                blockNumber = cursor.block().blockNumber()
+                lineNr = blockNumber + 1
+
+                rect = editor.cursorRect(cursor)
+                y = rect.y() - offset
+                h = rect.height()
+
+                change = diffData.get(lineNr)
+
+                if change == "added":
+                    painter.setBrush(added_color)
+                    painter.drawRect(QtCore.QRect(0, int(y), int(w), int(h)))
+
+                elif change == "modified":
+                    painter.setBrush(modified_color)
+                    painter.drawRect(QtCore.QRect(0, int(y), int(w), int(h)))
+
+                elif change == "deleted":
+                    # Draw a small right-pointing triangle at the *top* of this
+                    # line's position, signalling a deletion between the
+                    # previous line and this one.
+                    tri_h = max(4, h // 3)
+                    painter.setBrush(deleted_color)
+                    points = QtGui.QPolygon(
+                        [
+                            QtCore.QPoint(0, int(y)),
+                            QtCore.QPoint(int(w), int(y)),
+                            QtCore.QPoint(0, int(y) + tri_h),
+                        ]
+                    )
+                    painter.drawPolygon(points)
+
+                if y > y2:
+                    break  # Past the visible area
+                if not cursor.block().next().isValid():
+                    break  # End of document
+
+                cursor.movePosition(cursor.MoveOperation.NextBlock)
+
+            painter.end()
+
+    def __init__(self, *args, **kwds):
+        self.__diffGutterArea = None
+        self.__leftMarginHandle = None
+        super().__init__(*args, **kwds)
+        self._diffData = {}  # dict[int, str]: 1-based line nr → 'added'|'modified'|'deleted'
+        self.__diffGutterArea = self.__DiffGutterArea(self)
+        self.__leftMarginHandle = self._setLeftBarMargin(
+            self.__leftMarginHandle, self._getDiffGutterAreaWidth()
+        )
+
+    def showDiffGutter(self):
+        """Return whether the diff gutter strip is visible."""
+        return self.__showDiffGutter
+
+    @ce_option(True)
+    def setShowDiffGutter(self, value):
+        """Show or hide the diff gutter strip."""
+        self.__showDiffGutter = bool(value)
+        # Note: this may be called before __init__ completes
+        if self.__diffGutterArea:
+            if self.__showDiffGutter:
+                self.__diffGutterArea.show()
+            else:
+                self.__diffGutterArea.hide()
+        if self.__leftMarginHandle is not None:
+            self._setLeftBarMargin(
+                self.__leftMarginHandle, self._getDiffGutterAreaWidth()
+            )
+
+    def setDiffData(self, data):
+        """Supply diff change data to the gutter.
+
+        Parameters
+        ----------
+        data : dict[int, str] or None
+            Maps **1-based** line numbers to one of the strings
+            ``'added'``, ``'modified'``, or ``'deleted'``.
+
+            * ``'added'``    – line was inserted; draws a green bar.
+            * ``'modified'`` – line was changed;  draws an amber bar.
+            * ``'deleted'``  – lines were deleted *before* this line;
+              draws a small red triangle between the preceding line and
+              this one.
+
+            Pass ``None`` or an empty dict to clear all markers.
+        """
+        self._diffData = dict(data) if data else {}
+        if self.__diffGutterArea:
+            self.__diffGutterArea.update()
+
+    def _getDiffGutterAreaWidth(self):
+        if not self.__showDiffGutter:
+            return 0
+        return self._DiffGutterWidth
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+        rect = self.contentsRect()
+        m = self._getMarginBeforeLeftBar(self.__leftMarginHandle)
+        w = self._getDiffGutterAreaWidth()
+        self.__diffGutterArea.setGeometry(rect.x() + m, rect.y(), w, rect.height())
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        w = self._getDiffGutterAreaWidth()
+        self.__diffGutterArea.update(0, 0, w, self.height())
+
+
 class Wrap:
     def wrap(self):
         """Enable or disable wrapping"""
@@ -1507,23 +1690,21 @@ def _parse_hunks(unified_diff_lines):
 class DiffGutter:
     """Extension that shows a narrow diff-change indicator strip on the left gutter.
 
-    A coloured bar is drawn for each changed region compared to the file's
+    A colored bar is drawn for each changed region compared to the file's
     git HEAD state:
 
-    * **green**  – lines added (no corresponding lines in HEAD)
+    * **green** – lines added (no corresponding lines in HEAD)
     * **orange** – lines modified (replaced existing lines)
-    * **red**    – lines deleted (a small marker between surrounding lines)
+    * **red** – lines deleted (a small marker between surrounding lines)
 
-    The diff is recomputed via a single-shot :class:`QTimer` with a 500 ms
-    debounce that restarts on every ``textChanged`` event so that a ``git``
-    subprocess is not spawned on every keystroke.
+    The diff is recomputed via a single-shot :class:`QTimer` (see
+    :attr:`_DIFF_DEBOUNCE_MS`) that restarts on every ``textChanged`` event
+    so that a ``git`` subprocess is not spawned on every keystroke.
 
-    The gutter is also immediately refreshed (0 ms timer) when the editor's
-    associated file changes: call :meth:`setDiffGutterFilePath` after every
-    file-load or file-save event.
-
-    Gracefully no-ops when git is not available or the file is outside a
-    git repository.
+    The file path must be provided by calling :meth:`setDiffGutterFilePath`
+    whenever the editor's associated file changes (open, save-as).  No
+    subprocess is launched while the path is unknown or the file is outside
+    a git repository.
     """
 
     _DIFF_GUTTER_WIDTH = 4  # pixels
@@ -1624,13 +1805,13 @@ class DiffGutter:
             self.__diffGutterLeftMarginHandle, self._getDiffGutterWidth()
         )
 
-        # Single-shot debounce timer; fires _recomputeDiff after the interval
+        # Single-shot debounce timer; interval set from class constant
         self.__diffDebounceTimer = QtCore.QTimer(self)
         self.__diffDebounceTimer.setSingleShot(True)
         self.__diffDebounceTimer.setInterval(self._DIFF_DEBOUNCE_MS)
         self.__diffDebounceTimer.timeout.connect(self._recomputeDiff)
 
-        # Restart the timer on every text change (live-typing debounce)
+        # Restart the timer on every text change
         self.textChanged.connect(self.__onTextChangedForDiff)
 
     # ------------------------------------------------------------------
@@ -1640,20 +1821,12 @@ class DiffGutter:
     def setDiffGutterFilePath(self, path):
         """Set the file path used to compute the diff against git HEAD.
 
-        Call this whenever the editor's associated file changes (file open,
-        file save, file rename).  Triggers an immediate diff recompute
-        (deferred to the next event-loop iteration via a 0 ms timer so the
-        UI is never blocked on the calling thread).
-
-        Parameters
-        ----------
-        path : str or None
-            Absolute path to the file.  Pass ``None`` or an empty string to
-            clear the current path (the gutter will be repainted empty).
+        Call this whenever the editor's associated file changes (open, save-as,
+        rename).  Triggers an immediate diff recompute (deferred to the next
+        event-loop iteration via a 0 ms timer so the UI is never blocked).
         """
         self._diffGutterFilePath = path or ""
-        # Fire immediately (next event-loop tick) rather than waiting for
-        # the full debounce period — the file is already on disk at this point.
+        # Fire immediately (next event loop tick) rather than waiting 500 ms
         self.__diffDebounceTimer.start(0)
 
     def showDiffGutter(self):
@@ -1664,7 +1837,7 @@ class DiffGutter:
     def setShowDiffGutter(self, value):
         """Show or hide the diff gutter."""
         self.__showDiffGutter = bool(value)
-        # This setter may be called before __init__ finishes (via __initOptions),
+        # This setter is called before __init__ finishes (via __initOptions),
         # so guard against the area not yet existing.
         if self.__diffGutterArea:
             if self.__showDiffGutter:
@@ -1690,7 +1863,7 @@ class DiffGutter:
         return self._DIFF_GUTTER_WIDTH
 
     def _recomputeDiff(self):
-        """Recompute the diff between the editor content and the git HEAD blob.
+        """Recompute the diff between editor content and the git HEAD blob.
 
         Clears :attr:`_diffHunks` and repaints the gutter.  No subprocess is
         spawned when the file path is unset or the file is outside a git repo.
@@ -1702,9 +1875,13 @@ class DiffGutter:
             return
 
         # Locate the git root by walking up the directory tree.
+        # We avoid importing pyzo.tools to keep this usable before pyzo is
+        # fully initialised (the tools package __init__ requires pyzo.translate).
         git_root = None
         try:
-            current = os.path.abspath(os.path.dirname(self._diffGutterFilePath))
+            current = os.path.abspath(
+                os.path.dirname(self._diffGutterFilePath)
+            )
             while True:
                 if os.path.isdir(os.path.join(current, ".git")):
                     git_root = current
@@ -1724,7 +1901,7 @@ class DiffGutter:
         relpath = os.path.relpath(self._diffGutterFilePath, git_root)
         relpath = relpath.replace(os.sep, "/")
 
-        # Fetch the HEAD blob via git show
+        # Fetch the HEAD blob
         try:
             result = subprocess.run(
                 ["git", "show", "HEAD:" + relpath],
@@ -1735,8 +1912,6 @@ class DiffGutter:
             if result.returncode != 0:
                 self.__diffGutterArea.update()
                 return
-            # Decode with 'replace' so a file with unusual encoding (e.g. a
-            # binary file accidentally staged) never crashes the gutter.
             head_text = result.stdout.decode("utf-8", errors="replace")
         except Exception:
             self.__diffGutterArea.update()
