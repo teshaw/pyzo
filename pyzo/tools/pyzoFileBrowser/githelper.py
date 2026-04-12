@@ -196,6 +196,26 @@ def create_branch(repo_root, name):
 # ---------------------------------------------------------------------------
 
 
+def git_stash(repo_root, message):
+    """Create a new stash entry with *message* in *repo_root*.
+
+    Runs ``git stash push -m <message>`` and returns ``True`` when the git
+    command exits successfully (exit code 0), ``False`` on failure (e.g. git
+    not found, invalid repository).  Note that git exits with code 0 even
+    when there are no local changes to save.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "stash", "push", "-m", message],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def get_git_status(repo_root):
     """Return a :class:`GitStatus` for *repo_root*, or ``None`` on failure.
 
