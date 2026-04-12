@@ -741,7 +741,7 @@ class Tree(QtWidgets.QTreeWidget):
 
         Called after :func:`createItemsFun` so that all items are fully
         constructed and inserted into the tree before :meth:`setForeground`
-        is invoked.
+        is invoked.  Conflicted files additionally receive a ⚠ overlay icon.
         """
         if self._gitStatus is None:
             return
@@ -751,10 +751,29 @@ class Tree(QtWidgets.QTreeWidget):
         else:
             count = parent.childCount()
             get_item = parent.child
+
+        # Lazily build the conflict-overlay icon once per call.
+        _conflict_icon_cache = {}
+
+        def _conflict_overlay(base_icon):
+            key = id(base_icon)
+            if key not in _conflict_icon_cache:
+                warn_icon = QtWidgets.QApplication.style().standardIcon(
+                    QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
+                )
+                _conflict_icon_cache[key] = addIconOverlays(
+                    base_icon,
+                    warn_icon,
+                    offset=(8, 0),
+                    overlay_offset=(0, 0),
+                )
+            return _conflict_icon_cache[key]
+
         for i in range(count):
             item = get_item(i)
             if isinstance(item, DirItem):
                 color = self._gitStatus.get_dir_color(item.path())
+                xy = None
             elif isinstance(item, FileItem):
                 xy = self._gitStatus.file_status(item.path())
                 color = self._gitStatus.get_color_for_xy(xy)
@@ -764,6 +783,10 @@ class Tree(QtWidgets.QTreeWidget):
                 item.setForeground(0, QtGui.QBrush(QtGui.QColor(*color)))
             else:
                 item.setForeground(0, QtGui.QBrush())
+            # Add ⚠ overlay for unmerged (conflict) files
+            if xy is not None and self._gitStatus.is_conflict_xy(xy):
+                item.setIcon(0, _conflict_overlay(item.icon(0)))
+                item.setToolTip(0, "Merge conflict – resolve this file")
 
     def _refreshGitStatus(self):
         """Refresh the cached git status for the current path."""
@@ -920,6 +943,16 @@ class PopupMenu(pyzo.core.menu.Menu):
             self.addItem(translate("filebrowser", "Rename"), None, self.onRename)
             self.addItem(translate("filebrowser", "Delete"), None, self.onDelete)
 
+        # Git operations – only when the item resides inside a git repository
+        item_path = (
+            self._item.path() if isinstance(self._item, (FileItem, DirItem)) else self.parent().path()
+        )
+        if githelper.get_git_root(item_path):
+            self.addSeparator()
+            self.addItem(
+                translate("filebrowser", "Git commit\u2026"), None, self._gitCommit
+            )
+
     def _star(self):
         # Prepare
         browser = self.parent().parent()
@@ -930,6 +963,23 @@ class PopupMenu(pyzo.core.menu.Menu):
             browser.addStarredDir(path)
         # Refresh
         self.parent().setPath(self.parent().path())
+
+    def _gitCommit(self):
+        from .commit_widget import CommitWidget
+
+        tree = self.parent()
+        item_path = (
+            self._item.path()
+            if isinstance(self._item, (FileItem, DirItem))
+            else tree.path()
+        )
+        repo_root = githelper.get_git_root(item_path)
+        if repo_root is None:
+            return
+        owner, repo_name = githelper.get_github_remote(repo_root)
+        dlg = CommitWidget(tree, repo_root, owner, repo_name)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            tree.onChanged()  # refresh file status colours
 
     def _openOutsidePyzo(self):
         path = self._item.path()
