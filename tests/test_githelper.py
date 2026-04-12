@@ -1,17 +1,10 @@
-"""Tests for pyzo.tools.pyzoFileBrowser.githelper."""
+"""Tests for pyzo.tools.pyzoFileBrowser.githelper.get_file_blob."""
 
 import importlib.util
 import os
-import subprocess
-import sys
 
-import pytest
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
+# Import githelper directly to avoid triggering the Qt-dependent
+# pyzo.tools package __init__.
 _GITHELPER_PATH = os.path.join(
     os.path.dirname(__file__),
     "..",
@@ -20,160 +13,60 @@ _GITHELPER_PATH = os.path.join(
     "pyzoFileBrowser",
     "githelper.py",
 )
+_spec = importlib.util.spec_from_file_location("githelper", _GITHELPER_PATH)
+githelper = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(githelper)
+
+get_file_blob = githelper.get_file_blob
+get_git_root = githelper.get_git_root
+
+# The test suite lives inside the repository, so we can use it as a live
+# git repo for integration-style tests without any extra setup.
+REPO_ROOT = get_git_root(os.path.dirname(__file__))
 
 
-def _import_githelper():
-    """Import githelper directly from its file path (avoids Qt imports)."""
-    spec = importlib.util.spec_from_file_location("githelper", _GITHELPER_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def test_get_file_blob_returns_content_for_tracked_file():
+    """get_file_blob returns a non-empty str for a real tracked file."""
+    content = get_file_blob(REPO_ROOT, "README.md")
+    assert isinstance(content, str)
+    assert len(content) > 0
 
 
-# ---------------------------------------------------------------------------
-# is_valid_branch_name
-# ---------------------------------------------------------------------------
+def test_get_file_blob_nonexistent_file_returns_none():
+    """get_file_blob returns None for a path that does not exist in git."""
+    result = get_file_blob(REPO_ROOT, "this_file_does_not_exist_xyz.txt")
+    assert result is None
 
 
-class TestIsValidBranchName:
-    @pytest.fixture(autouse=True)
-    def _gh(self):
-        self.gh = _import_githelper()
-
-    def _valid(self, name):
-        assert self.gh.is_valid_branch_name(name), f"{name!r} should be valid"
-
-    def _invalid(self, name):
-        assert not self.gh.is_valid_branch_name(name), f"{name!r} should be invalid"
-
-    # --- valid names ---
-
-    def test_simple(self):
-        self._valid("main")
-
-    def test_hyphen_in_middle(self):
-        self._valid("feature-123")
-
-    def test_slash_separator(self):
-        self._valid("feature/my-feature")
-
-    def test_digits(self):
-        self._valid("release-1.0")
-
-    def test_underscore(self):
-        self._valid("my_branch")
-
-    # --- invalid names ---
-
-    def test_empty(self):
-        self._invalid("")
-
-    def test_space(self):
-        self._invalid("my branch")
-
-    def test_tab(self):
-        self._invalid("my\tbranch")
-
-    def test_tilde(self):
-        self._invalid("bad~name")
-
-    def test_caret(self):
-        self._invalid("bad^name")
-
-    def test_colon(self):
-        self._invalid("bad:name")
-
-    def test_question_mark(self):
-        self._invalid("bad?name")
-
-    def test_asterisk(self):
-        self._invalid("bad*name")
-
-    def test_open_bracket(self):
-        self._invalid("bad[name")
-
-    def test_backslash(self):
-        self._invalid("bad\\name")
-
-    def test_leading_dot(self):
-        self._invalid(".hidden")
-
-    def test_trailing_dot(self):
-        self._invalid("name.")
-
-    def test_double_dot(self):
-        self._invalid("bad..name")
-
-    def test_leading_dash(self):
-        self._invalid("-bad")
-
-    def test_dot_lock_suffix(self):
-        self._invalid("branch.lock")
-
-    def test_at_alone(self):
-        self._invalid("@")
+def test_get_file_blob_nonexistent_ref_returns_none():
+    """get_file_blob returns None when the ref does not exist."""
+    result = get_file_blob(REPO_ROOT, "README.md", ref="nonexistent-ref-xyz")
+    assert result is None
 
 
-# ---------------------------------------------------------------------------
-# create_branch (integration test – requires git)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(
-    subprocess.call(
-        ["git", "--version"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+def test_get_file_blob_windows_path_separators():
+    """get_file_blob converts backslashes to forward slashes for git."""
+    # Use a path that exists; on Windows callers may pass backslashes.
+    # pyzo/tools/pyzoFileBrowser/githelper.py is a tracked file.
+    forward = get_file_blob(
+        REPO_ROOT, "pyzo/tools/pyzoFileBrowser/githelper.py"
     )
-    != 0,
-    reason="git not available",
-)
-class TestCreateBranch:
-    @pytest.fixture(autouse=True)
-    def _setup(self, tmp_path):
-        self.gh = _import_githelper()
-        # Initialise a minimal git repo
-        self.repo = str(tmp_path)
-        subprocess.run(["git", "init", self.repo], check=True, capture_output=True)
-        subprocess.run(
-            ["git", "config", "user.email", "test@example.com"],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "config", "user.name", "Test"],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-        )
-        # Create an initial commit so HEAD exists
-        readme = os.path.join(self.repo, "README.md")
-        with open(readme, "w") as fh:
-            fh.write("init\n")
-        subprocess.run(["git", "add", "."], cwd=self.repo, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "init"],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-        )
+    backslash = get_file_blob(
+        REPO_ROOT, r"pyzo\tools\pyzoFileBrowser\githelper.py"
+    )
+    assert forward is not None
+    assert forward == backslash
 
-    def test_create_branch_success(self):
-        ok, msg = self.gh.create_branch(self.repo, "feature-x")
-        assert ok is True
-        assert msg == ""
-        # Verify the branch was actually checked out
-        branch = self.gh.get_git_branch(self.repo)
-        assert branch == "feature-x"
 
-    def test_create_branch_duplicate_fails(self):
-        self.gh.create_branch(self.repo, "feature-x")
-        # Try to create the same branch again (from within that branch)
-        ok, msg = self.gh.create_branch(self.repo, "feature-x")
-        assert ok is False
-        assert msg  # error message should be non-empty
+def test_get_file_blob_default_ref_is_head():
+    """Calling with and without explicit ref='HEAD' yields the same result."""
+    explicit = get_file_blob(REPO_ROOT, "README.md", ref="HEAD")
+    implicit = get_file_blob(REPO_ROOT, "README.md")
+    assert explicit == implicit
 
-    def test_create_branch_invalid_name_not_called(self):
-        """is_valid_branch_name must reject names before we call git."""
-        assert not self.gh.is_valid_branch_name("bad name")
+
+def test_get_file_blob_no_replacement_chars_in_ascii():
+    """Returned string contains valid text (no replacement characters for ASCII)."""
+    content = get_file_blob(REPO_ROOT, "README.md")
+    # README.md is ASCII/UTF-8 so no replacement characters expected.
+    assert "\ufffd" not in content

@@ -21,6 +21,9 @@ class Browser(QtWidgets.QWidget):
     It is also provides the API for dealing with starred dirs.
     """
 
+    # Emitted from the fetch worker thread (marshalled to the main thread)
+    _fetchResultReady = QtCore.Signal(int, int, str)
+
     def __init__(self, parent, config, path=None):
         super().__init__(parent)
 
@@ -73,49 +76,30 @@ class Browser(QtWidgets.QWidget):
             "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
         )
 
-        # Button to reveal the "create branch" input row
-        self._newBranchBut = QtWidgets.QToolButton(self)
-        self._newBranchBut.setIcon(pyzo.icons["add"])
-        self._newBranchBut.setIconSize(QtCore.QSize(16, 16))
-        self._newBranchBut.setStyleSheet("QToolButton { border: none; padding: 0px; }")
-        self._newBranchBut.setToolTip(translate("filebrowser", "Create new branch"))
-        self._newBranchBut.setVisible(False)
-        self._newBranchBut.clicked.connect(self._toggleBranchInput)
+        # Create ahead/behind badge label (hidden when both counts are 0)
+        self._gitBadge = QtWidgets.QLabel("")
+        self._gitBadge.setVisible(False)
+        self._gitBadge.setStyleSheet(
+            "QLabel { font-size: 10px; color: #888; padding: 0px 4px; }"
+        )
 
-        # Inline row for creating a new branch (hidden by default)
-        self._branchCreateRow = QtWidgets.QWidget(self)
-        self._branchCreateRow.setVisible(False)
-        self._branchNameEdit = QtWidgets.QLineEdit(self._branchCreateRow)
-        self._branchNameEdit.setPlaceholderText(
-            translate("filebrowser", "New branch name")
+        # Background fetch worker
+        interval = getattr(self.config, "fetchInterval", 300)
+        self._fetchWorker = githelper.GitFetchWorker(
+            self._onFetchResult, interval=interval
         )
-        self._branchCreateBut = QtWidgets.QPushButton(
-            translate("filebrowser", "Create"), self._branchCreateRow
-        )
-        self._branchCancelBut = QtWidgets.QToolButton(self._branchCreateRow)
-        self._branchCancelBut.setIcon(pyzo.icons["cancel"])
-        self._branchCancelBut.setIconSize(QtCore.QSize(16, 16))
-        self._branchCancelBut.setStyleSheet(
-            "QToolButton { border: none; padding: 0px; }"
-        )
-        self._branchCancelBut.setToolTip(translate("filebrowser", "Cancel"))
-        rowLayout = QtWidgets.QHBoxLayout(self._branchCreateRow)
-        rowLayout.setContentsMargins(0, 0, 0, 0)
-        rowLayout.setSpacing(2)
-        rowLayout.addWidget(self._branchNameEdit)
-        rowLayout.addWidget(self._branchCreateBut)
-        rowLayout.addWidget(self._branchCancelBut)
-        self._branchCreateBut.clicked.connect(self._createBranch)
-        self._branchCancelBut.clicked.connect(self._toggleBranchInput)
-        self._branchNameEdit.returnPressed.connect(self._createBranch)
+        self._fetchWorker.start()
 
-        # Status label for git errors (hidden by default)
-        self._gitErrorLabel = QtWidgets.QLabel("")
-        self._gitErrorLabel.setVisible(False)
-        self._gitErrorLabel.setStyleSheet(
-            "QLabel { color: red; padding: 1px 2px; font-size: small; }"
+        # Marshal fetch results from the worker thread to the main thread
+        self._fetchResultReady.connect(self._applyAheadBehind)
+
+        # Pause/resume the worker when the application gains/loses focus
+        QtWidgets.QApplication.instance().applicationStateChanged.connect(
+            self._onApplicationStateChanged
         )
-        self._gitErrorLabel.setWordWrap(True)
+
+        # Stop the worker when this widget is destroyed
+        self.destroyed.connect(self._stopFetchWorker)
 
         self._layout()
 
@@ -123,6 +107,47 @@ class Browser(QtWidgets.QWidget):
         if path is not None:
             self._tree.setPath(path)
         self._tree.dirChanged.emit(self._tree.path())
+
+    def _onFetchResult(self, ahead, behind, upstream):
+        """Called from the worker thread; marshal to the main thread."""
+        self._fetchResultReady.emit(ahead, behind, upstream or "")
+
+    def _applyAheadBehind(self, ahead, behind, upstream):
+        """Update the badge label in the main thread."""
+        if ahead == 0 and behind == 0:
+            self._gitBadge.setVisible(False)
+            return
+        parts = []
+        if ahead:
+            parts.append("\u2191{}".format(ahead))
+        if behind:
+            parts.append("\u2193{}".format(behind))
+        self._gitBadge.setText("  " + " ".join(parts))
+        # Build tooltip
+        tip_parts = []
+        if ahead:
+            tip_parts.append(
+                "{} commit{} ahead".format(ahead, "s" if ahead != 1 else "")
+            )
+        if behind:
+            tip_parts.append(
+                "{} commit{} behind".format(behind, "s" if behind != 1 else "")
+            )
+        if upstream and tip_parts:
+            tip_parts[-1] += " " + upstream
+        self._gitBadge.setToolTip(", ".join(tip_parts))
+        # Show the badge only when we are inside a git repository
+        self._gitBadge.setVisible(True)
+
+    def _onApplicationStateChanged(self, state):
+        """Pause the fetch worker when the application loses focus."""
+        if state == QtCore.Qt.ApplicationState.ApplicationActive:
+            self._fetchWorker.resume()
+        else:
+            self._fetchWorker.pause()
+
+    def _stopFetchWorker(self):
+        self._fetchWorker.stop()
 
     def getImportWizard(self):
         # Lazy loading
@@ -143,18 +168,15 @@ class Browser(QtWidgets.QWidget):
         #
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
-        # Git row: branch label + "new branch" button
-        gitRow = QtWidgets.QWidget(self)
-        gitRowLayout = QtWidgets.QHBoxLayout(gitRow)
-        gitRowLayout.setContentsMargins(0, 0, 0, 0)
-        gitRowLayout.setSpacing(2)
-        gitRowLayout.addWidget(self._gitLabel)
-        gitRowLayout.addStretch()
-        gitRowLayout.addWidget(self._newBranchBut)
-        self._gitRow = gitRow
-        layout.addWidget(gitRow)
-        layout.addWidget(self._branchCreateRow)
-        layout.addWidget(self._gitErrorLabel)
+        #
+        gitRow = QtWidgets.QHBoxLayout()
+        gitRow.setContentsMargins(0, 0, 0, 0)
+        gitRow.setSpacing(0)
+        gitRow.addWidget(self._gitLabel)
+        gitRow.addWidget(self._gitBadge)
+        gitRow.addStretch()
+        layout.addLayout(gitRow)
+        #
         layout.addWidget(self._tree)
         #
         subLayout = QtWidgets.QHBoxLayout()
@@ -165,6 +187,7 @@ class Browser(QtWidgets.QWidget):
 
     def cleanUp(self):
         self._fsProxy.stop()
+        self._fetchWorker.stop()
 
     def _updateGitLabel(self, path):
         """Update the git branch label to reflect the repository at *path*."""
@@ -174,64 +197,14 @@ class Browser(QtWidgets.QWidget):
             if branch:
                 self._gitLabel.setText("\u2387  " + branch)
                 self._gitLabel.setVisible(True)
-                self._newBranchBut.setVisible(True)
-                # Hide create-branch row and clear any previous error when
-                # the path changes (e.g. the user navigated to another repo).
-                self._branchCreateRow.setVisible(False)
-                self._gitErrorLabel.setVisible(False)
-                self._branchNameEdit.clear()
+                # Update fetch worker with new repo root
+                self._fetchWorker.set_repo(root)
+                # Hide badge until the next fetch completes
+                self._gitBadge.setVisible(False)
                 return
         self._gitLabel.setVisible(False)
-        self._newBranchBut.setVisible(False)
-        self._branchCreateRow.setVisible(False)
-        self._gitErrorLabel.setVisible(False)
-
-    def _toggleBranchInput(self):
-        """Show or hide the inline branch-creation row."""
-        visible = self._branchCreateRow.isVisible()
-        self._branchCreateRow.setVisible(not visible)
-        self._gitErrorLabel.setVisible(False)
-        if not visible:
-            self._branchNameEdit.clear()
-            self._branchNameEdit.setFocus()
-
-    def _createBranch(self):
-        """Validate the branch name and run ``git checkout -b <name>``."""
-        name = self._branchNameEdit.text().strip()
-
-        # Validate branch name
-        if not githelper.is_valid_branch_name(name):
-            self._gitErrorLabel.setText(
-                translate(
-                    "filebrowser",
-                    "Invalid branch name: must not be empty or contain spaces / "
-                    "invalid characters.",
-                )
-            )
-            self._gitErrorLabel.setVisible(True)
-            return
-
-        # Find git root for the current path
-        path = self._tree.path()
-        root = githelper.get_git_root(path)
-        if not root:
-            self._gitErrorLabel.setText(
-                translate("filebrowser", "Not inside a git repository.")
-            )
-            self._gitErrorLabel.setVisible(True)
-            return
-
-        # Run git checkout -b <name>
-        success, msg = githelper.create_branch(root, name)
-        if success:
-            # Hide the input row and update the branch label
-            self._branchCreateRow.setVisible(False)
-            self._gitErrorLabel.setVisible(False)
-            self._branchNameEdit.clear()
-            self._updateGitLabel(path)
-        else:
-            self._gitErrorLabel.setText(msg or translate("filebrowser", "Failed to create branch."))
-            self._gitErrorLabel.setVisible(True)
+        self._gitBadge.setVisible(False)
+        self._fetchWorker.set_repo(None)
 
     def nameFilter(self):
         # return self._nameFilter.lineEdit().text()
