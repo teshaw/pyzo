@@ -80,6 +80,10 @@ class PyzoFileBrowser(QtWidgets.QWidget):
         if "path" not in self.config or not isdir(self.config.path):
             self.config.path = op.expanduser("~")
 
+        # Ensure fetch interval in config (default: 300 seconds = 5 minutes)
+        if "fetchInterval" not in self.config:
+            self.config.fetchInterval = 300
+
         # Check expandedDirs and starredDirs.
         # Make path objects and remove invalid dirs. Also normalize case,
         # should not be necessary, but maybe the config was manually edited.

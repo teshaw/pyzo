@@ -13,6 +13,193 @@ from .tree import Tree
 from .utils import cleanpath, isdir
 
 
+class StashWidget(QtWidgets.QWidget):
+    """Panel shown below the git branch label that lists stash entries.
+
+    Each entry has **Apply**, **Pop**, and **Drop** buttons.  A **Stash
+    changes** button at the top lets the user push new stash entries with an
+    optional message.  The widget is hidden automatically when the current
+    directory is not inside a git repository.
+    """
+
+    #: Emitted after any stash operation so the file-browser tree can refresh
+    #: its git-status colours (the "Changes view").
+    refreshRequested = QtCore.Signal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._repo_root = None
+
+        # --- "Stash changes" button in the header row ---
+        self._pushButton = QtWidgets.QPushButton(
+            translate("filebrowser", "Stash changes")
+        )
+        self._pushButton.setToolTip(
+            translate("filebrowser", "Stash current changes (git stash push)")
+        )
+        self._pushButton.clicked.connect(self._onStashChanges)
+
+        # --- List widget that holds one row per stash entry ---
+        self._list = QtWidgets.QListWidget(self)
+        self._list.setMaximumHeight(150)
+        self._list.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+        # --- Layout ---
+        headerLabel = QtWidgets.QLabel(translate("filebrowser", "Stash"))
+        headerLabel.setStyleSheet(
+            "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
+        )
+        headerLayout = QtWidgets.QHBoxLayout()
+        headerLayout.setContentsMargins(0, 0, 0, 0)
+        headerLayout.addWidget(headerLabel)
+        headerLayout.addStretch()
+        headerLayout.addWidget(self._pushButton)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 0)
+        layout.setSpacing(2)
+        layout.addLayout(headerLayout)
+        layout.addWidget(self._list)
+        self.setLayout(layout)
+
+        self.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def updateForPath(self, path):
+        """Show/refresh the stash panel for the git repo containing *path*."""
+        root = githelper.get_git_root(path)
+        self._repo_root = root
+        if root:
+            self._refreshList()
+            self.setVisible(True)
+        else:
+            self._list.clear()
+            self.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _refreshList(self):
+        """Repopulate the stash list from ``git stash list``."""
+        self._list.clear()
+        if not self._repo_root:
+            return
+        for ref, message in githelper.get_stash_list(self._repo_root):
+            self._addEntry(ref, message)
+
+    def _addEntry(self, ref, message):
+        """Append one stash row (label + Apply/Pop/Drop buttons)."""
+        item = QtWidgets.QListWidgetItem()
+        self._list.addItem(item)
+
+        row = QtWidgets.QWidget()
+        rowLayout = QtWidgets.QHBoxLayout(row)
+        rowLayout.setContentsMargins(2, 1, 2, 1)
+        rowLayout.setSpacing(2)
+
+        label = QtWidgets.QLabel(message)
+        label.setToolTip(ref)
+        label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        rowLayout.addWidget(label)
+
+        for text, slot in [
+            (translate("filebrowser", "Apply"), self._onApply),
+            (translate("filebrowser", "Pop"), self._onPop),
+            (translate("filebrowser", "Drop"), self._onDrop),
+        ]:
+            btn = QtWidgets.QPushButton(text)
+            btn.setProperty("stashRef", ref)
+            btn.clicked.connect(slot)
+            rowLayout.addWidget(btn)
+
+        item.setSizeHint(row.sizeHint())
+        self._list.setItemWidget(item, row)
+
+    # ------------------------------------------------------------------
+    # Button callbacks
+    # ------------------------------------------------------------------
+
+    def _onApply(self):
+        """Apply the selected stash entry without removing it from the list."""
+        ref = self.sender().property("stashRef")
+        if ref and self._repo_root:
+            ok, out = githelper.run_stash_command(self._repo_root, ["apply", ref])
+            if not ok:
+                QtWidgets.QMessageBox.warning(
+                    self, translate("filebrowser", "Stash Apply"), out
+                )
+            self._afterOperation()
+
+    def _onPop(self):
+        """Apply the selected stash entry and remove it from the list."""
+        ref = self.sender().property("stashRef")
+        if ref and self._repo_root:
+            ok, out = githelper.run_stash_command(self._repo_root, ["pop", ref])
+            if not ok:
+                QtWidgets.QMessageBox.warning(
+                    self, translate("filebrowser", "Stash Pop"), out
+                )
+            self._afterOperation()
+
+    def _onDrop(self):
+        """Drop (delete) the selected stash entry after confirmation."""
+        ref = self.sender().property("stashRef")
+        if ref and self._repo_root:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                translate("filebrowser", "Drop Stash"),
+                translate("filebrowser", "Drop {}?").format(ref),
+            )
+            if answer == QtWidgets.QMessageBox.StandardButton.Yes:
+                ok, out = githelper.run_stash_command(
+                    self._repo_root, ["drop", ref]
+                )
+                if not ok:
+                    QtWidgets.QMessageBox.warning(
+                        self, translate("filebrowser", "Stash Drop"), out
+                    )
+                self._afterOperation()
+
+    def _onStashChanges(self):
+        """Push current working-tree changes onto the stash."""
+        if not self._repo_root:
+            return
+        message, ok = QtWidgets.QInputDialog.getText(
+            self,
+            translate("filebrowser", "Stash Changes"),
+            translate("filebrowser", "Optional message (leave blank for default):"),
+        )
+        if ok:
+            args = ["push"]
+            if message.strip():
+                args += ["-m", message.strip()]
+            ok2, out = githelper.run_stash_command(self._repo_root, args)
+            if not ok2:
+                QtWidgets.QMessageBox.warning(
+                    self, translate("filebrowser", "Stash Changes"), out
+                )
+            self._afterOperation()
+
+    def _afterOperation(self):
+        """Refresh the stash list and ask the file browser to update.
+
+        The refresh is unconditional: even when a command fails the working
+        tree may have been partially modified (e.g. a conflicted apply), so
+        keeping the UI in sync is always the right thing to do.
+        """
+        self._refreshList()
+        self.refreshRequested.emit()
+
+
 class Browser(QtWidgets.QWidget):
     """A browser consists of an address bar, and tree view, and other
     widgets to help browse the file system. The browser object is responsible
@@ -20,6 +207,9 @@ class Browser(QtWidgets.QWidget):
 
     It is also provides the API for dealing with starred dirs.
     """
+
+    # Emitted from the fetch worker thread (marshalled to the main thread)
+    _fetchResultReady = QtCore.Signal(int, int, str)
 
     def __init__(self, parent, config, path=None):
         super().__init__(parent)
@@ -69,12 +259,78 @@ class Browser(QtWidgets.QWidget):
         # Create git panel (hidden when not in a git repo)
         self._gitPanel = GitPanel(self)
 
+        # Create ahead/behind badge label (hidden when both counts are 0)
+        self._gitBadge = QtWidgets.QLabel("")
+        self._gitBadge.setVisible(False)
+        self._gitBadge.setStyleSheet(
+            "QLabel { font-size: 10px; color: #888; padding: 0px 4px; }"
+        )
+
+        # Background fetch worker
+        interval = getattr(self.config, "fetchInterval", 300)
+        self._fetchWorker = githelper.GitFetchWorker(
+            self._onFetchResult, interval=interval
+        )
+        self._fetchWorker.start()
+
+        # Marshal fetch results from the worker thread to the main thread
+        self._fetchResultReady.connect(self._applyAheadBehind)
+
+        # Pause/resume the worker when the application gains/loses focus
+        QtWidgets.QApplication.instance().applicationStateChanged.connect(
+            self._onApplicationStateChanged
+        )
+
+        # Stop the worker when this widget is destroyed
+        self.destroyed.connect(self._stopFetchWorker)
+
         self._layout()
 
         # Set and sync path ...
         if path is not None:
             self._tree.setPath(path)
         self._tree.dirChanged.emit(self._tree.path())
+
+    def _onFetchResult(self, ahead, behind, upstream):
+        """Called from the worker thread; marshal to the main thread."""
+        self._fetchResultReady.emit(ahead, behind, upstream or "")
+
+    def _applyAheadBehind(self, ahead, behind, upstream):
+        """Update the badge label in the main thread."""
+        if ahead == 0 and behind == 0:
+            self._gitBadge.setVisible(False)
+            return
+        parts = []
+        if ahead:
+            parts.append("\u2191{}".format(ahead))
+        if behind:
+            parts.append("\u2193{}".format(behind))
+        self._gitBadge.setText("  " + " ".join(parts))
+        # Build tooltip
+        tip_parts = []
+        if ahead:
+            tip_parts.append(
+                "{} commit{} ahead".format(ahead, "s" if ahead != 1 else "")
+            )
+        if behind:
+            tip_parts.append(
+                "{} commit{} behind".format(behind, "s" if behind != 1 else "")
+            )
+        if upstream and tip_parts:
+            tip_parts[-1] += " " + upstream
+        self._gitBadge.setToolTip(", ".join(tip_parts))
+        # Show the badge only when we are inside a git repository
+        self._gitBadge.setVisible(True)
+
+    def _onApplicationStateChanged(self, state):
+        """Pause the fetch worker when the application loses focus."""
+        if state == QtCore.Qt.ApplicationState.ApplicationActive:
+            self._fetchWorker.resume()
+        else:
+            self._fetchWorker.pause()
+
+    def _stopFetchWorker(self):
+        self._fetchWorker.stop()
 
     def getImportWizard(self):
         # Lazy loading
@@ -95,7 +351,15 @@ class Browser(QtWidgets.QWidget):
         #
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
-        layout.addWidget(self._gitPanel)
+        #
+        gitRow = QtWidgets.QHBoxLayout()
+        gitRow.setContentsMargins(0, 0, 0, 0)
+        gitRow.setSpacing(0)
+        gitRow.addWidget(self._gitLabel)
+        gitRow.addWidget(self._gitBadge)
+        gitRow.addStretch()
+        layout.addLayout(gitRow)
+        #
         layout.addWidget(self._tree)
         #
         subLayout = QtWidgets.QHBoxLayout()
@@ -106,10 +370,24 @@ class Browser(QtWidgets.QWidget):
 
     def cleanUp(self):
         self._fsProxy.stop()
+        self._fetchWorker.stop()
 
-    def _updateGitPanel(self, path):
-        """Update the git panel to reflect the repository at *path*."""
-        self._gitPanel.setPath(path)
+    def _updateGitLabel(self, path):
+        """Update the git branch label to reflect the repository at *path*."""
+        root = githelper.get_git_root(path)
+        if root:
+            branch = githelper.get_git_branch(root)
+            if branch:
+                self._gitLabel.setText("\u2387  " + branch)
+                self._gitLabel.setVisible(True)
+                # Update fetch worker with new repo root
+                self._fetchWorker.set_repo(root)
+                # Hide badge until the next fetch completes
+                self._gitBadge.setVisible(False)
+                return
+        self._gitLabel.setVisible(False)
+        self._gitBadge.setVisible(False)
+        self._fetchWorker.set_repo(None)
 
     def nameFilter(self):
         # return self._nameFilter.lineEdit().text()
