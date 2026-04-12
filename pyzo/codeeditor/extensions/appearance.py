@@ -1384,6 +1384,189 @@ class BreakPoints:
         self.__breakPointArea.update(0, 0, w, self.height())
 
 
+class DiffGutter:
+    """Extension that shows a diff-change indicator strip on the left gutter.
+
+    Callers supply change data via ``setDiffData()``.  The gutter paints:
+
+    * a **green** filled bar for added lines
+    * an **amber** filled bar for modified lines
+    * a small **red** right-pointing triangle *between* lines for deleted
+      positions (since there is no actual line to render a full-height bar on)
+
+    All colours use semi-transparent RGBA values so they degrade gracefully on
+    both light and dark themes.
+    """
+
+    # Width of the gutter strip in pixels
+    _DiffGutterWidth = 4
+
+    # Register style element for the gutter background
+    _styleElements = [
+        (
+            "Editor.DiffGutter",
+            "The background colour of the diff-change gutter.",
+            "fore:#000,back:#DDD",
+        )
+    ]
+
+    class __DiffGutterArea(QtWidgets.QWidget):
+        """Widget responsible for drawing the diff gutter strip."""
+
+        def __init__(self, codeEditor):
+            super().__init__(codeEditor)
+
+        def paintEvent(self, event):
+            editor = self.parent()
+
+            if not editor.showDiffGutter():
+                return
+
+            w = editor._DiffGutterWidth
+            viewport = editor.viewport()
+
+            # Init painter
+            painter = QtGui.QPainter()
+            painter.begin(self)
+
+            # Paint the full gutter height
+            y1, y2 = 0, editor.height()
+
+            # Draw background using the registered style element
+            fmt = editor.getStyleElementFormat("editor.diffgutter")
+            painter.fillRect(QtCore.QRect(0, int(y1), int(w), int(y2)), fmt.back)
+
+            diffData = editor._diffData
+            if not diffData:
+                painter.end()
+                return
+
+            # Compute the mapping from viewport coords → gutter coords
+            tmp = self.mapToGlobal(QtCore.QPoint(0, 0))
+            offset = viewport.mapFromGlobal(tmp).y()
+
+            # Semi-transparent colours that work on both light and dark themes
+            added_color = QtGui.QColor(0, 180, 0, 180)
+            modified_color = QtGui.QColor(220, 140, 0, 200)
+            deleted_color = QtGui.QColor(210, 30, 30, 220)
+
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+
+            # Iterate only visible blocks
+            cursor = editor.cursorForPosition(QtCore.QPoint(0, int(y1)))
+
+            while True:
+                blockNumber = cursor.block().blockNumber()
+                lineNr = blockNumber + 1
+
+                rect = editor.cursorRect(cursor)
+                y = rect.y() - offset
+                h = rect.height()
+
+                change = diffData.get(lineNr)
+
+                if change == "added":
+                    painter.setBrush(added_color)
+                    painter.drawRect(QtCore.QRect(0, int(y), int(w), int(h)))
+
+                elif change == "modified":
+                    painter.setBrush(modified_color)
+                    painter.drawRect(QtCore.QRect(0, int(y), int(w), int(h)))
+
+                elif change == "deleted":
+                    # Draw a small right-pointing triangle at the *top* of this
+                    # line's position, signalling a deletion between the
+                    # previous line and this one.
+                    tri_h = max(4, h // 3)
+                    painter.setBrush(deleted_color)
+                    points = QtGui.QPolygon(
+                        [
+                            QtCore.QPoint(0, int(y)),
+                            QtCore.QPoint(int(w), int(y)),
+                            QtCore.QPoint(0, int(y) + tri_h),
+                        ]
+                    )
+                    painter.drawPolygon(points)
+
+                if y > y2:
+                    break  # Past the visible area
+                if not cursor.block().next().isValid():
+                    break  # End of document
+
+                cursor.movePosition(cursor.MoveOperation.NextBlock)
+
+            painter.end()
+
+    def __init__(self, *args, **kwds):
+        self.__diffGutterArea = None
+        self.__leftMarginHandle = None
+        super().__init__(*args, **kwds)
+        self._diffData = {}  # dict[int, str]: 1-based line nr → 'added'|'modified'|'deleted'
+        self.__diffGutterArea = self.__DiffGutterArea(self)
+        self.__leftMarginHandle = self._setLeftBarMargin(
+            self.__leftMarginHandle, self._getDiffGutterAreaWidth()
+        )
+
+    def showDiffGutter(self):
+        """Return whether the diff gutter strip is visible."""
+        return self.__showDiffGutter
+
+    @ce_option(True)
+    def setShowDiffGutter(self, value):
+        """Show or hide the diff gutter strip."""
+        self.__showDiffGutter = bool(value)
+        # Note: this may be called before __init__ completes
+        if self.__diffGutterArea:
+            if self.__showDiffGutter:
+                self.__diffGutterArea.show()
+            else:
+                self.__diffGutterArea.hide()
+        if self.__leftMarginHandle is not None:
+            self._setLeftBarMargin(
+                self.__leftMarginHandle, self._getDiffGutterAreaWidth()
+            )
+
+    def setDiffData(self, data):
+        """Supply diff change data to the gutter.
+
+        Parameters
+        ----------
+        data : dict[int, str] or None
+            Maps **1-based** line numbers to one of the strings
+            ``'added'``, ``'modified'``, or ``'deleted'``.
+
+            * ``'added'``    – line was inserted; draws a green bar.
+            * ``'modified'`` – line was changed;  draws an amber bar.
+            * ``'deleted'``  – lines were deleted *before* this line;
+              draws a small red triangle between the preceding line and
+              this one.
+
+            Pass ``None`` or an empty dict to clear all markers.
+        """
+        self._diffData = dict(data) if data else {}
+        if self.__diffGutterArea:
+            self.__diffGutterArea.update()
+
+    def _getDiffGutterAreaWidth(self):
+        if not self.__showDiffGutter:
+            return 0
+        return self._DiffGutterWidth
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+        rect = self.contentsRect()
+        m = self._getMarginBeforeLeftBar(self.__leftMarginHandle)
+        w = self._getDiffGutterAreaWidth()
+        self.__diffGutterArea.setGeometry(rect.x() + m, rect.y(), w, rect.height())
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        w = self._getDiffGutterAreaWidth()
+        self.__diffGutterArea.update(0, 0, w, self.height())
+
+
 class Wrap:
     def wrap(self):
         """Enable or disable wrapping"""
