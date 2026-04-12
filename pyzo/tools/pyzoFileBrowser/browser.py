@@ -259,6 +259,13 @@ class Browser(QtWidgets.QWidget):
         # Create git panel (hidden when not in a git repo)
         self._gitPanel = GitPanel(self)
 
+        # Create git branch label (hidden when not in a git repo)
+        self._gitLabel = QtWidgets.QLabel("")
+        self._gitLabel.setVisible(False)
+        self._gitLabel.setStyleSheet(
+            "QLabel { font-size: 10px; color: #888; padding: 0px 4px; }"
+        )
+
         # Create ahead/behind badge label (hidden when both counts are 0)
         self._gitBadge = QtWidgets.QLabel("")
         self._gitBadge.setVisible(False)
@@ -360,6 +367,8 @@ class Browser(QtWidgets.QWidget):
         gitRow.addStretch()
         layout.addLayout(gitRow)
         #
+        layout.addWidget(self._gitPanel)
+        #
         layout.addWidget(self._tree)
         #
         subLayout = QtWidgets.QHBoxLayout()
@@ -388,6 +397,11 @@ class Browser(QtWidgets.QWidget):
         self._gitLabel.setVisible(False)
         self._gitBadge.setVisible(False)
         self._fetchWorker.set_repo(None)
+
+    def _updateGitPanel(self, path):
+        """Update the git label/badge row and the git push/pull panel for *path*."""
+        self._updateBranchCombo(path)
+        self._gitPanel.setPath(path)
 
     def nameFilter(self):
         # return self._nameFilter.lineEdit().text()
