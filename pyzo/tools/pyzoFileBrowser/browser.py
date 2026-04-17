@@ -332,6 +332,10 @@ class Browser(QtWidgets.QWidget):
     def _stopFetchWorker(self):
         self._fetchWorker.stop()
 
+    def _updateGitPanel(self, path):
+        """Update the git panel when the browser's active directory changes."""
+        self._gitPanel.setPath(path)
+
     def getImportWizard(self):
         # Lazy loading
         try:
