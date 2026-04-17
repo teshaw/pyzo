@@ -396,6 +396,112 @@ def git_stash(repo_root, message):
         return False
 
 
+def get_stash_list(repo_root):
+    """Return a list of ``(ref, message)`` tuples for stash entries.
+
+    Runs ``git stash list`` and parses the output.  Each entry's *ref* is the
+    stash reference (e.g. ``'stash@{0}'``) and *message* is the descriptive
+    text (e.g. ``'WIP on main: abc1234 commit message'``).
+
+    Returns an empty list on any error or when the repository has no stash
+    entries.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "stash", "list", "--format=%gd\t%s"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        if result.returncode != 0:
+            return []
+        entries = []
+        for line in result.stdout.splitlines():
+            if "\t" in line:
+                ref, _, message = line.partition("\t")
+                entries.append((ref.strip(), message.strip()))
+        return entries
+    except Exception:
+        return []
+
+
+def run_stash_command(repo_root, args):
+    """Run ``git stash <args>`` in *repo_root*.
+
+    Parameters
+    ----------
+    repo_root : str
+        Absolute path to the repository root.
+    args : list[str]
+        Arguments to pass to ``git stash`` (e.g. ``['pop', 'stash@{0}']``).
+
+    Returns
+    -------
+    tuple[bool, str]
+        ``(True, output)`` on success (exit code 0), or ``(False, error)``
+        on failure.  *output* / *error* is the combined stdout+stderr text.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "stash"] + list(args),
+            cwd=repo_root,
+            capture_output=True,
+            timeout=15,
+            text=True,
+        )
+        combined = (result.stdout + result.stderr).strip()
+        return result.returncode == 0, combined
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_github_remote(repo_root):
+    """Return ``(owner, repo_name)`` by inspecting the git remote URL.
+
+    Parses the URL of the remote named ``'origin'`` (falling back to the
+    first remote found) and extracts the GitHub owner and repository name.
+
+    Supports both HTTPS URLs (``https://github.com/<owner>/<repo>.git``) and
+    SSH URLs (``git@github.com:<owner>/<repo>.git``).
+
+    Returns ``(None, None)`` when no GitHub remote is found or on any error.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "-v"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None, None
+        # Prefer 'origin', otherwise take the first remote listed.
+        chosen_url = None
+        first_url = None
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            name, url = parts[0], parts[1]
+            if first_url is None:
+                first_url = url
+            if name == "origin":
+                chosen_url = url
+                break
+        url = chosen_url or first_url
+        if url is None:
+            return None, None
+        # HTTPS: https://github.com/owner/repo[.git]
+        m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url)
+        if m:
+            return m.group(1), m.group(2)
+        return None, None
+    except Exception:
+        return None, None
+
+
 def get_git_status(repo_root):
     """Return a :class:`GitStatus` for *repo_root*, or ``None`` on failure.
 
