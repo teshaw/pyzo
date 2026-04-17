@@ -255,9 +255,17 @@ class Browser(QtWidgets.QWidget):
         self._tree.dirChanged.connect(self._pathEdit.setPath)
         self._tree.dirChanged.connect(self._projects.setPath)
         self._tree.dirChanged.connect(self._updateGitPanel)
+        self._tree.dirChanged.connect(self._updateBranchCombo)
 
         # Create git panel (hidden when not in a git repo)
         self._gitPanel = GitPanel(self)
+
+        # Create branch-name label (hidden when not in a git repo)
+        self._gitLabel = QtWidgets.QLabel("")
+        self._gitLabel.setVisible(False)
+        self._gitLabel.setStyleSheet(
+            "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
+        )
 
         # Create ahead/behind badge label (hidden when both counts are 0)
         self._gitBadge = QtWidgets.QLabel("")
@@ -363,6 +371,8 @@ class Browser(QtWidgets.QWidget):
         gitRow.addWidget(self._gitBadge)
         gitRow.addStretch()
         layout.addLayout(gitRow)
+        #
+        layout.addWidget(self._gitPanel)
         #
         layout.addWidget(self._tree)
         #

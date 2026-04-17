@@ -11,6 +11,7 @@ import os
 import os.path as op
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
 
 from pyzo.qt import QtCore
@@ -600,3 +601,129 @@ def get_hunk_diff(filepath):
     # Fall back to staged-only diff for files that are fully staged.
     output = _run_diff(["--cached"])
     return _parse_hunks(output)
+
+
+# ---------------------------------------------------------------------------
+# Ahead/behind helper
+# ---------------------------------------------------------------------------
+
+
+def _get_ahead_behind(repo_root):
+    """Return ``(ahead, behind, upstream)`` for the current branch.
+
+    Uses ``git rev-list --count --left-right @{u}...HEAD`` which outputs
+    ``<behind>\\t<ahead>`` (the left side is the upstream, the right side is
+    HEAD).  Returns ``(0, 0, "")`` when there is no upstream or on any error.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "--left-right", "@{u}...HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        if result.returncode != 0:
+            return 0, 0, ""
+        parts = result.stdout.strip().split()
+        if len(parts) != 2:
+            return 0, 0, ""
+        behind, ahead = int(parts[0]), int(parts[1])
+    except Exception:
+        return 0, 0, ""
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        upstream = result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        upstream = ""
+
+    return ahead, behind, upstream
+
+
+# ---------------------------------------------------------------------------
+# GitFetchWorker - background fetch + ahead/behind reporting
+# ---------------------------------------------------------------------------
+
+
+class GitFetchWorker:
+    """Background worker that periodically runs ``git fetch`` and reports the
+    ahead/behind commit count relative to the upstream branch.
+
+    Parameters
+    ----------
+    callback : callable
+        Called with ``(ahead: int, behind: int, upstream: str)`` after each
+        fetch cycle.  Always invoked from the worker thread; callers must
+        marshal the result to the main thread if required (e.g. via a Qt
+        signal).
+    interval : int
+        Seconds between fetch cycles.  Defaults to 300.
+    """
+
+    def __init__(self, callback, interval=300):
+        self._callback = callback
+        self._interval = interval
+        self._repo_root = None
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # initially not paused
+        self._thread = None
+
+    def set_repo(self, root):
+        """Update the repository root used for git commands.
+
+        Pass ``None`` to disable fetching until a new root is set.
+        """
+        self._repo_root = root
+
+    def start(self):
+        """Start the background fetch thread."""
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Stop the background fetch thread (idempotent)."""
+        self._stop_event.set()
+        self._pause_event.set()  # unblock a waiting pause so the thread exits
+
+    def pause(self):
+        """Pause periodic fetching (e.g. when the application loses focus)."""
+        self._pause_event.clear()
+
+    def resume(self):
+        """Resume periodic fetching (e.g. when the application regains focus)."""
+        self._pause_event.set()
+
+    def _run(self):
+        while True:
+            # Wait for the interval or until stopped.
+            if self._stop_event.wait(self._interval):
+                break  # stop() was called
+            # Block here while paused; also respect a stop() during the wait.
+            self._pause_event.wait()
+            if self._stop_event.is_set():
+                break
+            self._fetch()
+
+    def _fetch(self):
+        root = self._repo_root
+        if not root:
+            return
+        try:
+            subprocess.run(
+                ["git", "fetch", "--quiet"],
+                cwd=root,
+                capture_output=True,
+                timeout=30,
+            )
+        except Exception:
+            return
+        ahead, behind, upstream = _get_ahead_behind(root)
+        self._callback(ahead, behind, upstream)
