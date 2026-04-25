@@ -364,13 +364,13 @@ class Browser(QtWidgets.QWidget):
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
         #
-        gitRow = QtWidgets.QHBoxLayout()
-        gitRow.setContentsMargins(0, 0, 0, 0)
-        gitRow.setSpacing(0)
-        gitRow.addWidget(self._gitLabel)
-        gitRow.addWidget(self._gitBadge)
-        gitRow.addStretch()
-        layout.addLayout(gitRow)
+        #gitRow = QtWidgets.QHBoxLayout()
+        #gitRow.setContentsMargins(0, 0, 0, 0)
+        #gitRow.setSpacing(0)
+        #gitRow.addWidget(self._gitLabel)
+        #gitRow.addWidget(self._gitBadge)
+        #gitRow.addStretch()
+        #layout.addLayout(gitRow)
         #
         layout.addWidget(self._gitPanel)
         #
