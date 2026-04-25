@@ -260,15 +260,8 @@ class Browser(QtWidgets.QWidget):
         # Create git panel (hidden when not in a git repo)
         self._gitPanel = GitPanel(self)
 
-        # Create branch-name label (hidden when not in a git repo)
-        self._gitLabel = QtWidgets.QLabel("")
-        self._gitLabel.setVisible(False)
-        self._gitLabel.setStyleSheet(
-            "QLabel { font-style: italic; color: gray; padding: 1px 2px; }"
-        )
-
         # Create ahead/behind badge label (hidden when both counts are 0)
-        self._gitBadge = QtWidgets.QLabel("")
+        self._gitBadge = QtWidgets.QLabel("", self)
         self._gitBadge.setVisible(False)
         self._gitBadge.setStyleSheet(
             "QLabel { font-size: 10px; color: #888; padding: 0px 4px; }"
@@ -364,13 +357,12 @@ class Browser(QtWidgets.QWidget):
         layout.addWidget(self._projects)
         layout.addWidget(self._pathEdit)
         #
-        #gitRow = QtWidgets.QHBoxLayout()
-        #gitRow.setContentsMargins(0, 0, 0, 0)
-        #gitRow.setSpacing(0)
-        #gitRow.addWidget(self._gitLabel)
-        #gitRow.addWidget(self._gitBadge)
-        #gitRow.addStretch()
-        #layout.addLayout(gitRow)
+        gitRow = QtWidgets.QHBoxLayout()
+        gitRow.setContentsMargins(0, 0, 0, 0)
+        gitRow.setSpacing(0)
+        gitRow.addWidget(self._gitBadge)
+        gitRow.addStretch()
+        layout.addLayout(gitRow)
         #
         layout.addWidget(self._gitPanel)
         #
@@ -387,19 +379,16 @@ class Browser(QtWidgets.QWidget):
         self._fetchWorker.stop()
 
     def _updateBranchCombo(self, path):
-        """Populate the branch combo box for the repository at *path*."""
+        """Update the fetch worker repo root when the active directory changes."""
         root = githelper.get_git_root(path)
         if root:
             branch = githelper.get_git_branch(root)
             if branch:
-                self._gitLabel.setText("\u2387  " + branch)
-                self._gitLabel.setVisible(True)
                 # Update fetch worker with new repo root
                 self._fetchWorker.set_repo(root)
                 # Hide badge until the next fetch completes
                 self._gitBadge.setVisible(False)
                 return
-        self._gitLabel.setVisible(False)
         self._gitBadge.setVisible(False)
         self._fetchWorker.set_repo(None)
 
