@@ -21,6 +21,11 @@ To react to runtime theme changes connect to ``pyzo.main.themeChanged``::
 # Palettes
 # ---------------------------------------------------------------------------
 
+#: Valid values for ``pyzo.config.view.qt_ui_theme``.
+THEME_AUTO = "auto"    #: Follow the OS light/dark setting.
+THEME_LIGHT = "light"  #: Always use a light palette.
+THEME_DARK = "dark"    #: Always use a dark palette.
+
 #: Color tokens for a light-mode UI.
 LIGHT_PALETTE = {
     "background": "#ffffff",
@@ -198,3 +203,46 @@ QDockWidget::title:hover {{
 """.format(
         **palette
     )
+
+
+def make_dark_app_palette():
+    """Build and return a dark ``QPalette`` for the entire application.
+
+    Creates a Fusion-compatible dark palette using colors from
+    :data:`DARK_PALETTE`.  Compatible with PyQt5, PyQt6, PySide2, and
+    PySide6 via the ``pyzo.qt`` abstraction layer.
+
+    Returns
+    -------
+    QtGui.QPalette
+        A fully configured dark palette ready to pass to
+        ``QApplication.setPalette()``.
+    """
+    from pyzo.qt import QtGui
+
+    pal = QtGui.QPalette()
+    CR = QtGui.QPalette.ColorRole
+    CG = QtGui.QPalette.ColorGroup
+    c = QtGui.QColor
+
+    pal.setColor(CR.Window, c(45, 45, 45))
+    pal.setColor(CR.WindowText, c(221, 221, 221))
+    pal.setColor(CR.Base, c(35, 35, 35))
+    pal.setColor(CR.AlternateBase, c(45, 45, 45))
+    pal.setColor(CR.ToolTipBase, c(25, 25, 25))
+    pal.setColor(CR.ToolTipText, c(221, 221, 221))
+    pal.setColor(CR.Text, c(221, 221, 221))
+    pal.setColor(CR.Button, c(53, 53, 53))
+    pal.setColor(CR.ButtonText, c(221, 221, 221))
+    pal.setColor(CR.BrightText, c(255, 255, 255))
+    pal.setColor(CR.Link, c(38, 139, 210))
+    pal.setColor(CR.Highlight, c(38, 139, 210))
+    pal.setColor(CR.HighlightedText, c(0, 0, 0))
+
+    # Muted colors for the disabled state.
+    for role in (CR.WindowText, CR.Text, CR.ButtonText):
+        pal.setColor(CG.Disabled, role, c(127, 127, 127))
+    pal.setColor(CG.Disabled, CR.Highlight, c(80, 80, 80))
+    pal.setColor(CG.Disabled, CR.HighlightedText, c(127, 127, 127))
+
+    return pal

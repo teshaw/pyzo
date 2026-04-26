@@ -376,15 +376,29 @@ class MainWindow(QtWidgets.QMainWindow):
         # Try changing the style
         qstyle = QtWidgets.qApp.setStyle(stylename)
 
-        # Set palette
-        if qstyle:
-            QtWidgets.qApp.setPalette(QtWidgets.qApp.nativePalette)
+        # Always restore the native palette before detecting dark mode and
+        # applying any UI-theme override, so that switching from Dark→Light
+        # (or vice versa) is clean even when the Qt style itself didn't change.
+        # nativePalette is always set during the setQtStyle(None) init call.
+        QtWidgets.qApp.setPalette(QtWidgets.qApp.nativePalette)
 
         # detect dark mode for widgets (might be different than dark mode for syntax)
         pal = QtWidgets.qApp.palette()
         pyzo.darkQt = (
             pal.window().color().lightness() < pal.windowText().color().lightness()
         )
+
+        # Apply manual dark/light override from the UI color theme setting.
+        # "auto" keeps the auto-detected value (and the native palette already set).
+        from pyzo.core.theme import THEME_DARK, THEME_LIGHT, make_dark_app_palette
+
+        ui_theme = pyzo.config.view.qt_ui_theme
+        if ui_theme == THEME_DARK:
+            QtWidgets.qApp.setPalette(make_dark_app_palette())
+            pyzo.darkQt = True
+        elif ui_theme == THEME_LIGHT:
+            # Native palette already applied above; just ensure the flag is set.
+            pyzo.darkQt = False
 
         # Apply theme-aware stylesheets across the application.
         self.applyTheme()
