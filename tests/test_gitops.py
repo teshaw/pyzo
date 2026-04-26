@@ -1,5 +1,5 @@
 """
-Unit tests for pyzo.tools.gitops.
+Unit tests for pyzo.tools.pyzoGitPanel.gitops_file.
 
 All tests mock ``subprocess.run`` so no real git repository is needed.
 
@@ -13,10 +13,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Load gitops directly so we do not trigger pyzo/tools/__init__.py (Qt).
+# Load gitops_file directly so we do not trigger pyzo/tools/__init__.py (Qt).
 _spec = importlib.util.spec_from_file_location(
-    "pyzo.tools.gitops",
-    Path(__file__).parent.parent / "pyzo" / "tools" / "gitops.py",
+    "pyzo.tools.pyzoGitPanel.gitops_file",
+    Path(__file__).parent.parent / "pyzo" / "tools" / "pyzoGitPanel" / "gitops_file.py",
 )
 _gitops = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_gitops)
