@@ -307,7 +307,7 @@ class TestDiffGutterWidget:
     def test_context_menu_shows_commit_action(self, editor, tmp_path, qt_app):
         """contextMenuEvent shows a menu containing 'Commit…' when a path is set."""
         from unittest.mock import patch
-        from pyzo.qt import QtCore, QtGui
+        from pyzo.qt import QtCore, QtGui, QtWidgets
 
         editor._diffGutterFilePath = str(tmp_path / "file.py")
         area = editor._DiffGutter__diffGutterArea
@@ -320,14 +320,6 @@ class TestDiffGutterWidget:
 
         # Patch QMenu.exec to prevent an actual modal menu loop; capture menu
         captured = {}
-
-        def fake_exec(pos):
-            captured["menu"] = menu_instance
-            return None  # no action selected
-
-        from pyzo.qt import QtWidgets
-
-        original_init = QtWidgets.QMenu.__init__
 
         class _CapturingMenu(QtWidgets.QMenu):
             def __init__(self, parent=None):
