@@ -6,6 +6,7 @@ See docs of the tab widget.
 
 import pyzo
 from pyzo.qt import QtCore, QtGui, QtWidgets  # noqa
+from pyzo.core.theme import get_active_palette, build_tab_stylesheet
 import sys
 
 ELLIPSIS = chr(8230)
@@ -13,82 +14,6 @@ ELLIPSIS = chr(8230)
 # Constants for the alignments of tabs
 MIN_NAME_WIDTH = 4
 MAX_NAME_WIDTH = 64
-
-
-## Define style sheet for the tabs
-
-STYLESHEET = """
-QTabWidget::pane { /* The tab widget frame */
-    border-top: 0px solid #A09B90;
-}
-
-QTabWidget::tab-bar {
-    left: 0px; /* move to the right by x px */
-}
-
-
-/* Style the tab using the tab sub-control. Note that
- it reads QTabBar _not_ QTabWidget */
-QTabBar::tab {
-    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                stop: 0.0 GRADIENT_UNSEL1,
-                stop: 0.4 GRADIENT_UNSEL2,
-                stop: 1.0 GRADIENT_UNSEL3 );
-    border: 1px solid #A09B90;
-    border-bottom-color: #DAD5CC; /* same as the pane color */
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
-    min-width: 5ex;
-    padding-bottom: PADDING_BOTTOMpx;
-    padding-top: PADDING_TOPpx;
-    padding-left: PADDING_LEFTpx;
-    padding-right: PADDING_RIGHTpx;
-    margin-right: -1px; /* "combine" borders */
-}
-QTabBar::tab:last {
-    margin-right: 0px;
-}
-
-/* Style the selected tab, hoovered tab, and other tabs. */
-QTabBar::tab:hover {
-    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                stop: 0.0 GRADIENT_SEL1,
-                stop: 0.4 GRADIENT_SEL2,
-                stop: 1.0 GRADIENT_SEL3 );
-}
-QTabBar::tab:selected {
-    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                stop: 0.0 GRADIENT_TOP_SELECTED,
-                stop: 0.12 GRADIENT_TOP_SELECTED,
-                stop: 0.120001 GRADIENT_SEL1,
-                stop: 0.4 GRADIENT_SEL2,
-                stop: 1.0 GRADIENT_SEL3 );
-}
-
-QTabBar::tab:selected {
-    border-width: 1px;
-    border-bottom-width: 0px;
-    border-top-left-radius: 5px;
-    border-top-right-radius: 5px;
-    border-color: BORDER_COLOR_SELECTED;
-}
-
-QTabBar::tab:!selected {
-    margin-top: 3px; /* make non-selected tabs look smaller */
-}
-
-"""
-
-STYLESHEET_REPLACEMENTS = [  # name, dark, light
-    ("BORDER_COLOR_SELECTED", "#ddd", "#333"),
-    ("GRADIENT_TOP_SELECTED", "rgba(0,255,255,128)", "rgba(0,0,128,128)"),
-    ("GRADIENT_UNSEL1", "rgba(0,0,0,128)", "rgba(220,220,220,128)"),
-    ("GRADIENT_UNSEL2", "rgba(140,140,140,128)", "rgba(200,200,200,128)"),
-    ("GRADIENT_UNSEL3", "rgba(160,160,160,128)", "rgba(100,100,100,128)"),
-    ("GRADIENT_SEL1", "rgba(0,0,0,128)", "rgba(245,250,255,128)"),
-    ("GRADIENT_SEL2", "rgba(50,50,50,128)", "rgba(210,210,210,128)"),
-    ("GRADIENT_SEL3", "rgba(100,100,100,128)", "rgba(200,200,200,128)"),
-]
 
 
 ## Define tab widget class
@@ -149,17 +74,16 @@ class CompactTabBar(QtWidgets.QTabBar):
         else:
             raise ValueError("Invalid value for padding.")
 
-        # Set style sheet
-        stylesheet = STYLESHEET
-        stylesheet = stylesheet.replace("PADDING_TOP", str(padding[0]))
-        stylesheet = stylesheet.replace("PADDING_BOTTOM", str(padding[1]))
-        stylesheet = stylesheet.replace("PADDING_LEFT", str(padding[2]))
-        stylesheet = stylesheet.replace("PADDING_RIGHT", str(padding[3]))
+        # Store padding so _applyStylesheet() can re-use it on theme changes.
+        self._padding = padding
 
-        for name, dark, light in STYLESHEET_REPLACEMENTS:
-            stylesheet = stylesheet.replace(name, dark if pyzo.darkQt else light)
+        # Apply the initial theme stylesheet.
+        self._applyStylesheet()
 
-        self.setStyleSheet(stylesheet)
+        # Connect to the main-window themeChanged signal so the tab colours
+        # are updated whenever the user switches between dark and light mode.
+        if hasattr(pyzo, "main") and pyzo.main is not None:
+            pyzo.main.themeChanged.connect(self._applyStylesheet)
 
         # We do our own eliding
         self.setElideMode(QtCore.Qt.TextElideMode.ElideNone)
@@ -182,6 +106,15 @@ class CompactTabBar(QtWidgets.QTabBar):
         self._alignTimer.setInterval(10)
         self._alignTimer.setSingleShot(True)
         self._alignTimer.timeout.connect(self._alignRecursive)
+
+    def _applyStylesheet(self):
+        """(Re-)apply the tab bar stylesheet for the current dark/light mode.
+
+        Called once during construction and again via the
+        ``pyzo.main.themeChanged`` signal whenever the user switches themes.
+        """
+        stylesheet = build_tab_stylesheet(get_active_palette(), self._padding)
+        self.setStyleSheet(stylesheet)
 
     def _compactTabBarData(self, i):
         """Get the underlying tab data for tab i. Only for internal use."""

@@ -1038,6 +1038,23 @@ class ViewMenu(Menu):
         self._qtThemeMenu.setOptions(titles, styleNames)
         self._qtThemeMenu.setCheckedOption(None, pyzo.config.view.qtstyle.lower())
 
+        # Create UI color theme menu (Light / Dark / Auto)
+        from pyzo.core.theme import THEME_AUTO, THEME_DARK, THEME_LIGHT
+
+        t = translate(
+            "menu",
+            "UI color theme ::: Choose between light, dark, or automatic (follows system) color scheme.",
+        )
+        self._uiColorThemeMenu = GeneralOptionsMenu(self, t, self._setUiColorTheme)
+        ui_theme_titles = [
+            translate("menu", "Auto (follows system)"),
+            translate("menu", "Light"),
+            translate("menu", "Dark"),
+        ]
+        ui_theme_values = [THEME_AUTO, THEME_LIGHT, THEME_DARK]
+        self._uiColorThemeMenu.setOptions(ui_theme_titles, ui_theme_values)
+        self._uiColorThemeMenu.setCheckedOption(None, pyzo.config.view.qt_ui_theme)
+
         # Build menu
         self.addItem(
             translate(
@@ -1148,6 +1165,7 @@ class ViewMenu(Menu):
         self.addMenu(FontMenu(self, translate("menu", "Font")), icons.style)
         self.addMenu(ZoomMenu(self, translate("menu", "Zooming")), icons.magnifier)
         self.addMenu(self._qtThemeMenu, icons.application_view_tile)
+        self.addMenu(self._uiColorThemeMenu, icons.application_view_tile)
 
     def addEditorItem(self, name, icon, param, shellsToo=False):
         """Create a boolean item that represents a property of the editors,
@@ -1205,6 +1223,11 @@ class ViewMenu(Menu):
     def _setQtTheme(self, value):
         pyzo.config.view.qtstyle = value
         pyzo.main.setQtStyle(value)
+
+    def _setUiColorTheme(self, value):
+        """Switch between 'auto', 'light', and 'dark' UI color themes."""
+        pyzo.config.view.qt_ui_theme = value
+        pyzo.main.setQtStyle(pyzo.config.view.qtstyle)
 
     def _setStatusBar(self, value):
         """Show or hide status bar."""
