@@ -282,3 +282,66 @@ class TestDiffGutterWidget:
         editor._recomputeDiff()
         assert len(editor._diffHunks) == 1
         assert editor._diffHunks[0].kind == "modify"
+
+    def test_on_diff_gutter_commit_noop_base(self, editor):
+        """The base _onDiffGutterCommit is a no-op (does not raise)."""
+        # Ensure calling it without a file path does not raise
+        editor._diffGutterFilePath = ""
+        editor._onDiffGutterCommit()  # should be silent
+
+    def test_context_menu_no_file_path(self, editor, qt_app):
+        """contextMenuEvent does nothing when no file path is set."""
+        from pyzo.qt import QtCore, QtGui
+
+        editor._diffGutterFilePath = ""
+        area = editor._DiffGutter__diffGutterArea
+        # Synthesize a right-click context menu event at (0, 0)
+        event = QtGui.QContextMenuEvent(
+            QtGui.QContextMenuEvent.Reason.Mouse,
+            QtCore.QPoint(0, 0),
+            area.mapToGlobal(QtCore.QPoint(0, 0)),
+        )
+        # Should return without showing a menu (no assertion needed, just no crash)
+        area.contextMenuEvent(event)
+
+    def test_context_menu_shows_commit_action(self, editor, tmp_path, qt_app):
+        """contextMenuEvent shows a menu containing 'Commit…' when a path is set."""
+        from unittest.mock import patch
+        from pyzo.qt import QtCore, QtGui
+
+        editor._diffGutterFilePath = str(tmp_path / "file.py")
+        area = editor._DiffGutter__diffGutterArea
+
+        event = QtGui.QContextMenuEvent(
+            QtGui.QContextMenuEvent.Reason.Mouse,
+            QtCore.QPoint(0, 0),
+            area.mapToGlobal(QtCore.QPoint(0, 0)),
+        )
+
+        # Patch QMenu.exec to prevent an actual modal menu loop; capture menu
+        captured = {}
+
+        def fake_exec(pos):
+            captured["menu"] = menu_instance
+            return None  # no action selected
+
+        from pyzo.qt import QtWidgets
+
+        original_init = QtWidgets.QMenu.__init__
+
+        class _CapturingMenu(QtWidgets.QMenu):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                captured["menu"] = self
+
+            def exec(self, pos):
+                captured["menu"] = self
+                return None
+
+        with patch("pyzo.codeeditor.extensions.appearance.QtWidgets.QMenu", _CapturingMenu):
+            area.contextMenuEvent(event)
+
+        menu_instance = captured.get("menu")
+        assert menu_instance is not None
+        action_texts = [a.text() for a in menu_instance.actions()]
+        assert "Commit\u2026" in action_texts

@@ -748,6 +748,18 @@ class PyzoEditor(BaseTextCtrl):
         # Trigger update of indentation and line ending in the "File" menu
         pyzo.editors.onCurrentChanged()
 
+    def _onDiffGutterCommit(self):
+        """Open the commit dialog for the repository that owns the current file."""
+        from pyzo.tools.pyzoFileBrowser.githelper import get_git_root, get_github_remote
+        from pyzo.tools.pyzoFileBrowser.commit_widget import CommitWidget
+
+        repo_root = get_git_root(self._filename or "")
+        if repo_root is None:
+            return
+        owner, repo_name = get_github_remote(repo_root)
+        dlg = CommitWidget(self, repo_root, owner, repo_name)
+        dlg.exec()
+
     def _expandSelectionToWholeBlocks(self):
         """expands the selection of the current text cursor to whole blocks
 

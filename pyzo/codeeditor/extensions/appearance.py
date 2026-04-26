@@ -1609,6 +1609,16 @@ class DiffGutter:
 
             painter.end()
 
+        def contextMenuEvent(self, event):
+            editor = self.parent()
+            if not editor._diffGutterFilePath:
+                return
+            menu = QtWidgets.QMenu(self)
+            commit_action = menu.addAction("Commit\u2026")
+            action = menu.exec(event.globalPos())
+            if action is commit_action:
+                editor._onDiffGutterCommit()
+
     def __init__(self, *args, **kwds):
         self.__diffGutterArea = None
         self.__diffGutterLeftMarginHandle = None
@@ -1645,6 +1655,13 @@ class DiffGutter:
         self._diffGutterFilePath = path or ""
         # Fire immediately (next event loop tick) rather than waiting 500 ms
         self.__diffDebounceTimer.start(0)
+
+    def _onDiffGutterCommit(self):
+        """Called when the user selects "Commit…" from the diff-gutter context menu.
+
+        The base implementation is a no-op.  Subclasses (e.g. PyzoEditor) should
+        override this to open a commit dialog appropriate for the host application.
+        """
 
     def showDiffGutter(self):
         """Return whether the diff gutter is currently visible."""
