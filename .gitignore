@@ -10,7 +10,3 @@ freeze/pyzo.spec
 *.pyc
 pyzo.egg-info/*
 .DS_Store
-
-sys
-subprocess
-os
