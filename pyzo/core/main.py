@@ -25,6 +25,11 @@ from pyzo.core.views import ViewManager
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    #: Emitted after the active Qt color theme has changed (dark ↔ light or
+    #: Qt style switch).  Widgets that have theme-sensitive stylesheets should
+    #: connect to this signal and call their own re-styling logic.
+    themeChanged = QtCore.Signal()
+
     def __init__(self, parent=None, locale=None):
         super().__init__(parent)
 
@@ -346,6 +351,19 @@ class MainWindow(QtWidgets.QMainWindow):
             if not pyzo.config.view.qtstyle:
                 pyzo.config.view.qtstyle = pyzo.defaultQtStyleName
 
+            # Hook into the OS color-scheme change signal (Qt 6.5+) so that
+            # switching between system light/dark mode is reflected immediately.
+            hints = QtWidgets.QApplication.styleHints()
+            if hasattr(hints, "colorSchemeChanged"):
+                try:
+                    hints.colorSchemeChanged.connect(
+                        self._onSystemColorSchemeChanged
+                    )
+                except (AttributeError, RuntimeError) as err:
+                    print(
+                        "Could not connect to colorSchemeChanged signal: " + str(err)
+                    )
+
         # Init
         if not stylename:
             stylename = pyzo.config.view.qtstyle
@@ -358,9 +376,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # Try changing the style
         qstyle = QtWidgets.qApp.setStyle(stylename)
 
-        # Set palette
-        if qstyle:
-            QtWidgets.qApp.setPalette(QtWidgets.qApp.nativePalette)
+        # Always restore the native palette before detecting dark mode and
+        # applying any UI-theme override, so that switching from Dark→Light
+        # (or vice versa) is clean even when the Qt style itself didn't change.
+        # nativePalette is always set during the setQtStyle(None) init call.
+        QtWidgets.qApp.setPalette(QtWidgets.qApp.nativePalette)
 
         # detect dark mode for widgets (might be different than dark mode for syntax)
         pal = QtWidgets.qApp.palette()
@@ -368,8 +388,47 @@ class MainWindow(QtWidgets.QMainWindow):
             pal.window().color().lightness() < pal.windowText().color().lightness()
         )
 
+        # Apply manual dark/light override from the UI color theme setting.
+        # "auto" keeps the auto-detected value (and the native palette already set).
+        from pyzo.core.theme import THEME_DARK, THEME_LIGHT, make_dark_app_palette
+
+        ui_theme = pyzo.config.view.qt_ui_theme
+        if ui_theme == THEME_DARK:
+            QtWidgets.qApp.setPalette(make_dark_app_palette())
+            pyzo.darkQt = True
+        elif ui_theme == THEME_LIGHT:
+            # Native palette already applied above; just ensure the flag is set.
+            pyzo.darkQt = False
+
+        # Apply theme-aware stylesheets across the application.
+        self.applyTheme()
+
         # Done
         return qstyle
+
+    def applyTheme(self):
+        """Apply the active color theme to the application UI.
+
+        Updates the global ``QApplication`` stylesheet with colors from
+        the active palette and emits :attr:`themeChanged` so that all
+        connected widgets (e.g. :class:`CompactTabBar`) can re-apply their
+        own theme-sensitive stylesheets.
+        """
+        from pyzo.core.theme import get_active_palette, build_application_stylesheet
+
+        palette = get_active_palette()
+        QtWidgets.qApp.setStyleSheet(build_application_stylesheet(palette))
+        self.themeChanged.emit()
+
+    def _onSystemColorSchemeChanged(self):
+        """Called when the OS switches between dark and light mode (Qt 6.5+).
+
+        Re-applies the current Qt style so that ``pyzo.darkQt`` and all
+        theme-sensitive stylesheets are updated to match the new scheme.
+        """
+        # Refresh the native palette first so the new OS colors are picked up.
+        QtWidgets.qApp.nativePalette = QtWidgets.qApp.palette()
+        self.setQtStyle(pyzo.config.view.qtstyle)
 
     def closeEvent(self, event):
         """Override close event handler."""
@@ -531,6 +590,41 @@ def loadAppIcons():
     QtWidgets.qApp.setWindowIcon(pyzo.icon)
 
 
+def _brighten_icon(icon):
+    """Return a brightened copy of *icon* for use on dark backgrounds.
+
+    Non-transparent pixels have their RGB channels boosted so that dark icons
+    (e.g. those with black outlines) remain visible against dark widget
+    backgrounds.  Fully- or nearly-transparent pixels are left untouched.
+    """
+    # Pixels with alpha below this threshold are considered transparent and
+    # are skipped to avoid bleeding color into invisible edge pixels.
+    _TRANSPARENT_ALPHA_THRESHOLD = 10
+    # Amount (0-255) added to each RGB channel to brighten dark pixels.
+    # Chosen to make typical dark outlines clearly visible on dark backgrounds
+    # while not severely washing out saturated icon colors.
+    _BRIGHTNESS_BOOST = 70
+
+    pm = icon.pixmap(16, 16)
+    img = pm.toImage().convertToFormat(QtGui.QImage.Format.Format_ARGB32)
+    for y in range(img.height()):
+        for x in range(img.width()):
+            rgba = img.pixel(x, y)
+            alpha = (rgba >> 24) & 0xFF
+            if alpha < _TRANSPARENT_ALPHA_THRESHOLD:
+                continue  # leave transparent pixels alone
+            r = (rgba >> 16) & 0xFF
+            g = (rgba >> 8) & 0xFF
+            b = rgba & 0xFF
+            # Boost each channel so that dark outlines become visible on
+            # dark backgrounds, while saturated colours stay readable.
+            r = min(255, r + _BRIGHTNESS_BOOST)
+            g = min(255, g + _BRIGHTNESS_BOOST)
+            b = min(255, b + _BRIGHTNESS_BOOST)
+            img.setPixel(x, y, (alpha << 24) | (r << 16) | (g << 8) | b)
+    return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
+
+
 def loadIcons():
     """Load all icons in the icon dir."""
     # Get directory containing the icons
@@ -549,6 +643,9 @@ def loadIcons():
                 # Create icon
                 icon = QtGui.QIcon()
                 icon.addFile(ffname, QtCore.QSize(16, 16))
+                # In dark mode brighten the icon so dark outlines stay visible.
+                if pyzo.darkQt:
+                    icon = _brighten_icon(icon)
                 # Store
                 pyzo.icons[name] = icon
             except Exception as err:

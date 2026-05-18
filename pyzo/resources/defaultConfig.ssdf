@@ -36,6 +36,7 @@ view = dict:
     autoComplete_theme = 0
     #
     qtstyle = ''
+    qt_ui_theme = 'auto'  # 'auto', 'light', or 'dark'
     edgeColumn = 80
     fontname = 'DejaVu Sans Mono'
     zoom = 0  # Both for editor and shell
